@@ -260,7 +260,7 @@ class Scanner:
             "locator_label": label_text,
             "placeholder": "",
             "available_options": ", ".join(options),
-            "current_value": selected if selected != "Select Gender" and selected != "Select Country" else "",
+            "current_value": "" if not selected or selected.lower().startswith("select") else selected,
             "status": "NEW",
             "change_details": "",
             "healed_by": "",
