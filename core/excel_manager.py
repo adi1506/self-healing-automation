@@ -179,14 +179,18 @@ class ExcelManager:
                 break
             elem = {}
             for col_idx, key in enumerate(ELEMENT_MAP_KEYS, 1):
-                elem[key] = ws.cell(row=row, column=col_idx).value or ""
-            elem["last_scanned"] = ws.cell(row=row, column=len(ELEMENT_MAP_HEADERS)).value or ""
+                raw = ws.cell(row=row, column=col_idx).value
+                elem[key] = raw if raw is not None else ""
+            raw = ws.cell(row=row, column=len(ELEMENT_MAP_HEADERS)).value
+            elem["last_scanned"] = raw if raw is not None else ""
             elements.append(elem)
         return elements
 
     def save_test_data(self, url: str, test_rows: list[dict]):
         """Save test data rows to the Test Data sheet."""
         path = self.get_excel_path(url)
+        if not os.path.exists(path):
+            return
         wb = load_workbook(path)
         ws = wb["Test Data"]
 
@@ -226,24 +230,33 @@ class ExcelManager:
                 break
             row_data = {}
             for col_idx, header in enumerate(headers, 1):
-                row_data[header] = ws.cell(row=row, column=col_idx).value or ""
+                raw = ws.cell(row=row, column=col_idx).value
+                row_data[header] = raw if raw is not None else ""
             rows.append(row_data)
         return rows
+
+    def _normalize_key(self, s: str) -> str:
+        """Normalize a header or data key for comparison."""
+        return s.lower().replace(" ", "_").replace("-", "").replace(".", "")
 
     def _append_to_sheet(self, url: str, sheet_name: str, data: dict, headers: list[str]):
         """Generic method to append a row to any sheet."""
         path = self.get_excel_path(url)
+        if not os.path.exists(path):
+            return
         wb = load_workbook(path)
         ws = wb[sheet_name]
 
-        next_row = ws.max_row + 1
-        if ws.max_row == 1 or ws.cell(row=2, column=1).value is None:
-            next_row = 2
+        next_row = 2
+        for row in range(2, ws.max_row + 2):
+            if ws.cell(row=row, column=1).value is None:
+                next_row = row
+                break
 
-        keys = [h.lower().replace(" ", "_").replace("-", "").replace(".", "") for h in headers]
+        keys = [self._normalize_key(h) for h in headers]
         for col_idx, key in enumerate(keys, 1):
             for data_key, data_val in data.items():
-                if data_key.lower().replace(" ", "_").replace("-", "") == key:
+                if self._normalize_key(data_key) == key:
                     ws.cell(row=next_row, column=col_idx, value=data_val)
                     break
 
@@ -281,7 +294,7 @@ class ExcelManager:
 
         wb = load_workbook(path)
         ws = wb[sheet_name]
-        keys = [h.lower().replace(" ", "_").replace("-", "").replace(".", "") for h in headers]
+        keys = [self._normalize_key(h) for h in headers]
 
         rows = []
         for row in range(2, ws.max_row + 1):
@@ -289,6 +302,7 @@ class ExcelManager:
                 break
             row_data = {}
             for col_idx, key in enumerate(keys, 1):
-                row_data[key] = ws.cell(row=row, column=col_idx).value or ""
+                raw = ws.cell(row=row, column=col_idx).value
+                row_data[key] = raw if raw is not None else ""
             rows.append(row_data)
         return rows

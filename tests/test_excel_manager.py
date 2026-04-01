@@ -244,6 +244,35 @@ class TestHealHistory:
         assert results[0]["healed_by"] == "Level 1 (ID)"
 
 
+class TestMultiRowAppend:
+    def test_append_two_run_results(self, manager):
+        elements = [
+            {
+                "sno": 1, "element_name": "X", "element_type": "input-text",
+                "locator_id": "", "locator_name": "", "locator_css": "", "locator_xpath": "",
+                "locator_data_testid": "", "locator_label": "", "placeholder": "",
+                "available_options": "", "current_value": "", "status": "NEW",
+                "change_details": "", "healed_by": "",
+            },
+        ]
+        manager.save_element_map("https://example.com", elements)
+
+        manager.append_run_result("https://example.com", {
+            "run_id": "RUN-001", "timestamp": "2026-04-01", "test_case_name": "A",
+            "element_name": "X", "expected_value": "1", "actual_value": "1",
+            "status": "PASS", "screenshot": "",
+        })
+        manager.append_run_result("https://example.com", {
+            "run_id": "RUN-002", "timestamp": "2026-04-01", "test_case_name": "B",
+            "element_name": "X", "expected_value": "2", "actual_value": "2",
+            "status": "PASS", "screenshot": "",
+        })
+        results = manager.read_run_results("https://example.com")
+        assert len(results) == 2
+        assert results[0]["run_id"] == "RUN-001"
+        assert results[1]["run_id"] == "RUN-002"
+
+
 class TestExcelExists:
     def test_returns_false_for_new_url(self, manager):
         assert manager.excel_exists("https://never-scanned.com") is False
