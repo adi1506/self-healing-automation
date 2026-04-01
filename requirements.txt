@@ -1,0 +1,7 @@
+streamlit
+playwright
+openpyxl
+google-generativeai
+pytest
+pytest-asyncio
+pandas
