@@ -1,13 +1,30 @@
+import asyncio
+import sys
 from playwright.async_api import async_playwright
 
 
+def _run_async(coro):
+    """Run an async coroutine from sync code, avoiding event loop conflicts with Streamlit."""
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 class Scanner:
-    async def scan(self, url: str) -> list[dict]:
+    def scan(self, url: str) -> list[dict]:
         """Scan a web page and extract all interactive elements with multiple locators."""
+        return _run_async(self._scan_async(url))
+
+    async def _scan_async(self, url: str) -> list[dict]:
+        """Async implementation of scan."""
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            await page.goto(url, wait_until="networkidle")
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
             elements = []
             sno = 1
@@ -93,6 +110,23 @@ class Scanner:
                     const inputs = clone.querySelectorAll('input, select, textarea');
                     inputs.forEach(i => i.remove());
                     return clone.textContent.trim();
+                }
+
+                // Walk up from the element to find a row-like container that has
+                // both a text-bearing child and the input (sibling label pattern).
+                let current = el.parentElement;
+                for (let depth = 0; depth < 5 && current; depth++) {
+                    const children = Array.from(current.children);
+                    // A good container has 2+ children, at least one with text only
+                    if (children.length >= 2) {
+                        for (const child of children) {
+                            if (child.contains(el)) continue;
+                            if (child.querySelector('input, select, textarea')) continue;
+                            const text = child.textContent.trim();
+                            if (text && text.length < 100) return text;
+                        }
+                    }
+                    current = current.parentElement;
                 }
                 return '';
             }
@@ -275,10 +309,31 @@ class Scanner:
         first_radio = radios[0]
         group_label = await first_radio.evaluate("""
             el => {
-                const formGroup = el.closest('.form-group');
-                if (formGroup) {
-                    const label = formGroup.querySelector(':scope > label');
-                    if (label) return label.textContent.trim();
+                // Walk up to find nearest parent container with a direct label child
+                // (more specific than fieldset legend — prefer the closer label)
+                let parent = el.parentElement;
+                for (let i = 0; i < 5 && parent; i++) {
+                    const label = parent.querySelector(':scope > label');
+                    if (label && !label.querySelector('input')) {
+                        return label.textContent.trim();
+                    }
+                    parent = parent.parentElement;
+                }
+                // Fallback: fieldset > legend (semantic HTML)
+                const fieldset = el.closest('fieldset');
+                if (fieldset) {
+                    const legend = fieldset.querySelector('legend');
+                    if (legend) return legend.textContent.trim();
+                }
+                // Try aria-label or aria-labelledby on a parent
+                let container = el.closest('[aria-label], [aria-labelledby]');
+                if (container) {
+                    if (container.getAttribute('aria-label')) return container.getAttribute('aria-label');
+                    const labelledBy = container.getAttribute('aria-labelledby');
+                    if (labelledBy) {
+                        const labelEl = document.getElementById(labelledBy);
+                        if (labelEl) return labelEl.textContent.trim();
+                    }
                 }
                 return '';
             }

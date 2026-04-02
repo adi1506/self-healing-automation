@@ -9,31 +9,121 @@ class Healer:
         self.scanner = Scanner()
         self.ai_matcher = AIMatcher(api_key=ai_api_key)
 
-    async def heal(self, url: str, excel_manager: ExcelManager) -> dict:
+    def heal(self, url: str, excel_manager: ExcelManager) -> dict:
         """
         Compare current page state against stored element map and heal broken selectors.
+        Uses multi-phase matching: Level 1 (locators) greedy, Level 2 (attributes) global optimal.
         Returns a report dict with counts and change details.
         """
         stored_elements = excel_manager.read_element_map(url)
-        current_elements = await self.scanner.scan(url)
+        current_elements = self.scanner.scan(url)
 
         matched_stored = set()
         matched_current = set()
+        # results[s_idx] = (status, current_index_or_None, healed_by)
+        results = {}
+
+        # Phase 1: Level 1 + Level 1b matching (greedy — locator matches are unambiguous)
+        for s_idx, stored in enumerate(stored_elements):
+            match_result = self._try_level1_match(stored, current_elements, matched_current)
+            if match_result:
+                results[s_idx] = match_result
+                matched_stored.add(s_idx)
+                if match_result["current_index"] is not None:
+                    matched_current.add(match_result["current_index"])
+
+        # Phase 2: Level 2 attribute matching (global optimal — pick best pair first)
+        unmatched_s = [i for i in range(len(stored_elements)) if i not in matched_stored]
+        unmatched_c = [i for i in range(len(current_elements)) if i not in matched_current]
+
+        if unmatched_s and unmatched_c:
+            # Compute all pairwise similarity scores
+            pair_scores = []
+            for s_idx in unmatched_s:
+                stored_fp = self._build_fingerprint(stored_elements[s_idx])
+                for c_idx in unmatched_c:
+                    current_fp = self._build_fingerprint(current_elements[c_idx])
+                    score = self.calculate_similarity(stored_fp, current_fp)
+                    if score >= 0.5:
+                        pair_scores.append((score, s_idx, c_idx))
+
+            # Sort by score descending — assign best pairs first
+            pair_scores.sort(key=lambda x: x[0], reverse=True)
+            assigned_s = set()
+            assigned_c = set()
+
+            for score, s_idx, c_idx in pair_scores:
+                if s_idx in assigned_s or c_idx in assigned_c:
+                    continue
+                if score >= 0.75:
+                    results[s_idx] = {"status": "CHANGED", "current_index": c_idx, "healed_by": f"Level 2 (attribute, {score:.0%})"}
+                    matched_stored.add(s_idx)
+                    matched_current.add(c_idx)
+                    assigned_s.add(s_idx)
+                    assigned_c.add(c_idx)
+
+            # Phase 2b: Gray-zone candidates (0.5–0.75) — try Level 3 AI
+            for score, s_idx, c_idx in pair_scores:
+                if s_idx in assigned_s or c_idx in assigned_c:
+                    continue
+                if score >= 0.5:
+                    if self.ai_matcher.is_available():
+                        unmatched = [current_elements[c_idx]]
+                        ai_result = self.ai_matcher.match_element(stored_elements[s_idx], unmatched)
+                        if ai_result and ai_result.get("match_index") == 0 and ai_result.get("confidence", 0) >= 0.7:
+                            results[s_idx] = {"status": "CHANGED", "current_index": c_idx, "healed_by": "Level 3 (Gemini confirmed)"}
+                            matched_stored.add(s_idx)
+                            matched_current.add(c_idx)
+                            assigned_s.add(s_idx)
+                            assigned_c.add(c_idx)
+
+        # Phase 3: Level 3 full AI matching for remaining unmatched
+        unmatched_s = [i for i in range(len(stored_elements)) if i not in matched_stored]
+        unmatched_c = [i for i in range(len(current_elements)) if i not in matched_current]
+
+        if unmatched_s and unmatched_c and self.ai_matcher.is_available():
+            for s_idx in list(unmatched_s):
+                unmatched_current = [current_elements[i] for i in unmatched_c]
+                ai_result = self.ai_matcher.match_element(stored_elements[s_idx], unmatched_current)
+                if ai_result and ai_result.get("match_index", -1) >= 0 and ai_result.get("confidence", 0) >= 0.7:
+                    c_idx = unmatched_c[ai_result["match_index"]]
+                    results[s_idx] = {"status": "CHANGED", "current_index": c_idx, "healed_by": f"Level 3 (Gemini, {ai_result['confidence']:.0%})"}
+                    matched_stored.add(s_idx)
+                    matched_current.add(c_idx)
+                    unmatched_s.remove(s_idx)
+                    unmatched_c.remove(c_idx)
+
+        # Phase 4: Mark remaining unmatched stored elements
+        for s_idx in range(len(stored_elements)):
+            if s_idx in results:
+                continue
+            # Check if there were gray-zone candidates without AI
+            stored_fp = self._build_fingerprint(stored_elements[s_idx])
+            has_candidates = False
+            for c_idx in range(len(current_elements)):
+                if c_idx in matched_current:
+                    continue
+                current_fp = self._build_fingerprint(current_elements[c_idx])
+                score = self.calculate_similarity(stored_fp, current_fp)
+                if score >= 0.5:
+                    has_candidates = True
+                    break
+            if has_candidates and not self.ai_matcher.is_available():
+                results[s_idx] = {"status": "UNRESOLVED", "current_index": None, "healed_by": ""}
+            else:
+                results[s_idx] = {"status": "REMOVED", "current_index": None, "healed_by": ""}
+
+        # Build healed_elements and changes from results
         changes = []
         healed_elements = []
 
-        # Phase 1: Try to match stored elements to current elements
         for s_idx, stored in enumerate(stored_elements):
-            match_result = self._try_match(stored, current_elements, matched_current)
+            match_result = results[s_idx]
 
             if match_result["status"] == "UNCHANGED":
-                matched_stored.add(s_idx)
-                matched_current.add(match_result["current_index"])
                 healed_elements.append(self._merge_element(stored, current_elements[match_result["current_index"]], "UNCHANGED", "", ""))
 
             elif match_result["status"] == "CHANGED":
-                matched_stored.add(s_idx)
-                matched_current.add(match_result["current_index"])
                 current = current_elements[match_result["current_index"]]
                 change_details = self._compute_change_details(stored, current)
                 changes.append({
@@ -44,7 +134,6 @@ class Healer:
                 healed_elements.append(self._merge_element(stored, current, "CHANGED", change_details, match_result["healed_by"]))
 
             elif match_result["status"] == "UNRESOLVED":
-                matched_stored.add(s_idx)
                 changes.append({
                     "element_name": stored["element_name"],
                     "change_details": "All selectors failed, AI unavailable",
@@ -58,7 +147,6 @@ class Healer:
 
             else:
                 # REMOVED
-                matched_stored.add(s_idx)
                 changes.append({
                     "element_name": stored["element_name"],
                     "change_details": "Element no longer found on page",
@@ -110,10 +198,10 @@ class Healer:
             "changes": changes,
         }
 
-    def _try_match(self, stored: dict, current_elements: list[dict], already_matched: set) -> dict:
+    def _try_level1_match(self, stored: dict, current_elements: list[dict], already_matched: set) -> dict | None:
         """
-        Try to find the stored element among current elements using the 3-level fallback.
-        NOTE: This is NOT async — the matching is done by comparing data, not by using Playwright.
+        Try Level 1 (exact locator) and Level 1b (partial locator) matching only.
+        Returns match result dict or None if no locator-based match found.
         """
         # Level 1: Direct locator matching
         for c_idx, current in enumerate(current_elements):
@@ -126,62 +214,20 @@ class Healer:
                     return {"status": "CHANGED", "current_index": c_idx, "healed_by": "Level 1 (selector match)"}
 
         # Level 1b: Partial locator match
+        best_count = 0
+        best_idx = -1
         for c_idx, current in enumerate(current_elements):
             if c_idx in already_matched:
                 continue
             matching_locators = self._count_matching_locators(stored, current)
-            if matching_locators >= 1:
-                return {"status": "CHANGED", "current_index": c_idx, "healed_by": f"Level 1 ({matching_locators} locator(s))"}
-
-        # Level 2: Attribute-based matching
-        stored_fp = self._build_fingerprint(stored)
-        best_score = 0
-        best_idx = -1
-        candidates_in_range = []
-
-        for c_idx, current in enumerate(current_elements):
-            if c_idx in already_matched:
-                continue
-            current_fp = self._build_fingerprint(current)
-            score = self.calculate_similarity(stored_fp, current_fp)
-            if score >= 0.85:
-                if score > best_score:
-                    best_score = score
-                    best_idx = c_idx
-            elif score >= 0.6:
-                candidates_in_range.append((c_idx, score))
+            if matching_locators >= 1 and matching_locators > best_count:
+                best_count = matching_locators
+                best_idx = c_idx
 
         if best_idx >= 0:
-            return {"status": "CHANGED", "current_index": best_idx, "healed_by": f"Level 2 (attribute, {best_score:.0%})"}
+            return {"status": "CHANGED", "current_index": best_idx, "healed_by": f"Level 1 ({best_count} locator(s))"}
 
-        # Level 3: Gemini AI matching
-        if self.ai_matcher.is_available():
-            # Level 2 gray zone — single candidate, ask Gemini to confirm
-            if len(candidates_in_range) == 1:
-                c_idx = candidates_in_range[0][0]
-                unmatched = [current_elements[c_idx]]
-                ai_result = self.ai_matcher.match_element(stored, unmatched)
-                if ai_result and ai_result.get("match_index") == 0 and ai_result.get("confidence", 0) >= 0.7:
-                    return {"status": "CHANGED", "current_index": c_idx, "healed_by": "Level 3 (Gemini confirmed)"}
-
-            # Full Gemini matching on all unmatched
-            unmatched = [
-                current_elements[i] for i in range(len(current_elements))
-                if i not in already_matched
-            ]
-            if unmatched:
-                ai_result = self.ai_matcher.match_element(stored, unmatched)
-                if ai_result and ai_result.get("match_index", -1) >= 0 and ai_result.get("confidence", 0) >= 0.7:
-                    unmatched_indices = [i for i in range(len(current_elements)) if i not in already_matched]
-                    original_idx = unmatched_indices[ai_result["match_index"]]
-                    return {"status": "CHANGED", "current_index": original_idx, "healed_by": f"Level 3 (Gemini, {ai_result['confidence']:.0%})"}
-
-        # If candidates in range but no AI, mark unresolved
-        if candidates_in_range and not self.ai_matcher.is_available():
-            return {"status": "UNRESOLVED"}
-
-        # Nothing found at all
-        return {"status": "REMOVED"}
+        return None
 
     def _locators_match(self, stored: dict, current: dict) -> bool:
         """Check if the primary locators match between stored and current element."""

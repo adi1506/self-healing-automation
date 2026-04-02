@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1.0"
+		/>
+		<title>Sample Form — Registration</title>
+		<style>
+			*,
+			*::before,
+			*::after {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
+			}
+
+			body {
+				font-family:
+					-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+					Oxygen, Ubuntu, sans-serif;
+				background: #f5f5f7;
+				min-height: 100vh;
+				padding: 40px 20px 40px;
+				color: #1d1d1f;
+				-webkit-font-smoothing: antialiased;
+			}
+
+			.form-wrapper {
+				display: flex;
+				justify-content: center;
+			}
+
+			.form-container {
+				background: #fff;
+				border-radius: 16px;
+				box-shadow:
+					0 1px 3px rgba(0, 0, 0, 0.04),
+					0 4px 24px rgba(0, 0, 0, 0.06);
+				padding: 44px 40px 36px;
+				max-width: 540px;
+				width: 100%;
+			}
+
+			.form-header {
+				margin-bottom: 28px;
+			}
+
+			.form-header .logo {
+				font-size: 20px;
+				font-weight: 700;
+				color: #4f46e5;
+				letter-spacing: -0.5px;
+				margin-bottom: 4px;
+			}
+
+			.form-header h2 {
+				font-size: 22px;
+				font-weight: 600;
+				color: #1d1d1f;
+				letter-spacing: -0.3px;
+			}
+
+			.form-header p {
+				font-size: 13px;
+				color: #86868b;
+				margin-top: 4px;
+			}
+
+			.form-group {
+				margin-bottom: 18px;
+			}
+
+			.form-row {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 14px;
+			}
+
+			label {
+				display: block;
+				margin-bottom: 5px;
+				font-size: 13px;
+				font-weight: 500;
+				color: #374151;
+			}
+
+			input[type="text"],
+			input[type="email"],
+			input[type="tel"],
+			input[type="number"],
+			input[type="date"],
+			select,
+			textarea {
+				width: 100%;
+				padding: 9px 12px;
+				border: 1px solid #d4d4d8;
+				border-radius: 8px;
+				font-size: 14px;
+				font-family: inherit;
+				color: #1d1d1f;
+				background: #fff;
+				transition:
+					border-color 0.15s ease,
+					box-shadow 0.15s ease;
+				appearance: none;
+				-webkit-appearance: none;
+			}
+
+			select {
+				background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M2.5 4.5L6 8l3.5-3.5'/%3E%3C/svg%3E");
+				background-repeat: no-repeat;
+				background-position: right 12px center;
+				padding-right: 32px;
+			}
+
+			input:focus,
+			select:focus,
+			textarea:focus {
+				outline: none;
+				border-color: #4f46e5;
+				box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.08);
+			}
+
+			textarea {
+				resize: vertical;
+				min-height: 72px;
+			}
+
+			.radio-group,
+			.checkbox-group {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 14px;
+				margin-top: 4px;
+			}
+
+			.radio-group label,
+			.checkbox-group label {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+				font-weight: 400;
+				font-size: 13px;
+				color: #374151;
+				cursor: pointer;
+			}
+
+			input[type="radio"],
+			input[type="checkbox"] {
+				accent-color: #4f46e5;
+				width: 15px;
+				height: 15px;
+				margin: 0;
+			}
+
+			.divider {
+				height: 1px;
+				background: #e5e5ea;
+				margin: 22px 0;
+			}
+
+			fieldset {
+				border: none;
+				padding: 0;
+				margin: 0 0 6px;
+			}
+
+			fieldset legend {
+				font-size: 11px;
+				font-weight: 600;
+				text-transform: uppercase;
+				letter-spacing: 0.8px;
+				color: #86868b;
+				margin-bottom: 14px;
+				padding-bottom: 8px;
+				border-bottom: 1px solid #f0f0f2;
+				width: 100%;
+			}
+
+			button[type="submit"] {
+				width: 100%;
+				padding: 11px;
+				background: #4f46e5;
+				color: #fff;
+				border: none;
+				border-radius: 8px;
+				font-size: 15px;
+				font-weight: 600;
+				font-family: inherit;
+				cursor: pointer;
+				transition: background 0.15s ease;
+				margin-top: 6px;
+			}
+
+			button[type="submit"]:hover {
+				background: #4338ca;
+			}
+
+			button[type="submit"]:active {
+				background: #3730a3;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="form-wrapper">
+			<div class="form-container">
+				<div class="form-header">
+					<div class="logo">Sample Form</div>
+					<h2>Create your account</h2>
+					<p>Start managing your finances in minutes.</p>
+				</div>
+				<form id="registrationForm">
+					<div class="form-row">
+						<div class="form-group">
+							<label for="fName">Given Name</label>
+							<input
+								type="text"
+								id="fName"
+								name="firstName"
+								placeholder="Enter given name"
+								data-testid="first-name-input"
+							/>
+						</div>
+						<div class="form-group">
+							<label for="lName">Last Name</label>
+							<input
+								type="text"
+								id="lName"
+								name="lastName"
+								placeholder="Enter last name"
+								data-testid="last-name-input"
+							/>
+						</div>
+					</div>
+					<div class="form-group">
+						<label for="emailAddress">Email</label>
+						<input
+							type="email"
+							id="emailAddress"
+							name="email"
+							placeholder="Enter email address"
+							data-testid="email-input"
+						/>
+					</div>
+					<div class="form-row">
+						<div class="form-group">
+							<label for="phone">Mobile Number</label>
+							<input
+								type="tel"
+								id="phone"
+								name="phone"
+								placeholder="Enter mobile number"
+								data-testid="phone-field"
+							/>
+						</div>
+						<div class="form-group">
+							<label for="age">Age</label>
+							<input
+								type="number"
+								id="age"
+								name="age"
+								placeholder="Enter age"
+								data-testid="age-input"
+							/>
+						</div>
+					</div>
+					<div class="form-row">
+						<div class="form-group">
+							<label for="gender">Gender</label>
+							<select
+								id="gender"
+								name="gender"
+								data-testid="gender-select"
+							>
+								<option value="">Select Gender</option>
+								<option value="Male">Male</option>
+								<option value="Female">Female</option>
+								<option value="Other">Other</option>
+							</select>
+						</div>
+						<div class="form-group">
+							<label for="country">Country</label>
+							<select
+								id="country"
+								name="country"
+								data-testid="country-select"
+							>
+								<option value="">Select Country</option>
+								<option value="India">India</option>
+								<option value="USA">USA</option>
+								<option value="UK">UK</option>
+								<option value="Canada">Canada</option>
+								<option value="Australia">
+									Australia
+								</option>
+							</select>
+						</div>
+					</div>
+					<div class="form-group">
+						<label>Employment Status</label>
+						<div class="radio-group">
+							<label
+								><input
+									type="radio"
+									name="employment"
+									value="Employed"
+									data-testid="employment-employed"
+								/>
+								Employed</label
+							>
+							<label
+								><input
+									type="radio"
+									name="employment"
+									value="Unemployed"
+									data-testid="employment-unemployed"
+								/>
+								Unemployed</label
+							>
+							<label
+								><input
+									type="radio"
+									name="employment"
+									value="Student"
+									data-testid="employment-student"
+								/>
+								Student</label
+							>
+						</div>
+					</div>
+					<div class="form-group">
+						<label for="address">Street Address</label>
+						<textarea
+							id="address"
+							name="address"
+							placeholder="Enter street address"
+							data-testid="address-textarea"
+						></textarea>
+					</div>
+					<div class="divider"></div>
+					<div class="form-group">
+						<div class="checkbox-group">
+							<label
+								><input
+									type="checkbox"
+									id="terms"
+									name="terms"
+									data-testid="terms-checkbox"
+								/>
+								I agree to the Terms & Conditions</label
+							>
+						</div>
+					</div>
+					<div class="form-group">
+						<div class="checkbox-group">
+							<label
+								><input
+									type="checkbox"
+									id="newsletter"
+									name="newsletter"
+									data-testid="newsletter-checkbox"
+								/>
+								Subscribe to newsletter</label
+							>
+						</div>
+					</div>
+					<button type="submit" data-testid="submit-button">
+						Register
+					</button>
+				</form>
+			</div>
+		</div>
+
+		<script>
+			document
+				.getElementById("registrationForm")
+				.addEventListener("submit", function (e) {
+					e.preventDefault();
+					alert("Form submitted successfully! (demo)");
+				});
+		</script>
+	</body>
+</html>

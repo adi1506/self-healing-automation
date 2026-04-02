@@ -53,8 +53,9 @@ class ExcelManager:
         self._url_map_file = os.path.join(data_dir, "_url_map.txt")
 
     def sanitize_url(self, url: str) -> str:
-        """Convert URL to a safe filename string."""
-        sanitized = re.sub(r"https?://", "", url)
+        """Convert URL to a safe filename string. Strips fragment (#hash) so all versions share one file."""
+        url_no_fragment = re.sub(r"#.*$", "", url)
+        sanitized = re.sub(r"https?://", "", url_no_fragment)
         sanitized = re.sub(r"[^a-zA-Z0-9]", "_", sanitized)
         sanitized = re.sub(r"_+", "_", sanitized).strip("_")
         return sanitized
@@ -67,8 +68,13 @@ class ExcelManager:
         """Check if an Excel file exists for the given URL."""
         return os.path.exists(self.get_excel_path(url))
 
+    def _strip_fragment(self, url: str) -> str:
+        """Strip the URL fragment (#hash) so all versions share one entry."""
+        return re.sub(r"#.*$", "", url)
+
     def _save_url_mapping(self, url: str):
         """Save URL to sanitized-name mapping for reverse lookup."""
+        base_url = self._strip_fragment(url)
         mappings = {}
         if os.path.exists(self._url_map_file):
             with open(self._url_map_file, "r") as f:
@@ -77,10 +83,37 @@ class ExcelManager:
                     if "|" in line:
                         key, val = line.split("|", 1)
                         mappings[key] = val
-        mappings[self.sanitize_url(url)] = url
+        mappings[self.sanitize_url(base_url)] = base_url
         with open(self._url_map_file, "w") as f:
             for key, val in mappings.items():
                 f.write(f"{key}|{val}\n")
+
+    def delete_url(self, url: str) -> bool:
+        """Delete all data for a scanned URL (Excel file + URL mapping entry)."""
+        base_url = self._strip_fragment(url)
+        sanitized = self.sanitize_url(base_url)
+
+        # Delete the Excel file
+        excel_path = self.get_excel_path(url)
+        if os.path.exists(excel_path):
+            os.remove(excel_path)
+
+        # Remove from URL map
+        if os.path.exists(self._url_map_file):
+            mappings = {}
+            with open(self._url_map_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if "|" in line:
+                        key, val = line.split("|", 1)
+                        mappings[key] = val
+            if sanitized in mappings:
+                del mappings[sanitized]
+                with open(self._url_map_file, "w") as f:
+                    for key, val in mappings.items():
+                        f.write(f"{key}|{val}\n")
+                return True
+        return not os.path.exists(excel_path)
 
     def list_scanned_urls(self) -> list[str]:
         """List all URLs that have been scanned (have Excel files)."""

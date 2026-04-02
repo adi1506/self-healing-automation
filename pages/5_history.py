@@ -1,8 +1,8 @@
 import streamlit as st
 from core.excel_manager import ExcelManager
 
-st.set_page_config(page_title="History", page_icon="📋", layout="wide")
-st.title("📋 History")
+st.set_page_config(page_title="History", layout="wide")
+st.title("History")
 
 DATA_DIR = "data/scans"
 excel_manager = ExcelManager(data_dir=DATA_DIR)

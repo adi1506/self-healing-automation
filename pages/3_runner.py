@@ -1,4 +1,3 @@
-import asyncio
 import os
 import streamlit as st
 from datetime import datetime
@@ -6,17 +5,13 @@ from core.setter import Setter
 from core.healer import Healer
 from core.excel_manager import ExcelManager
 
-st.set_page_config(page_title="Runner", page_icon="▶", layout="wide")
-st.title("▶ Run Tests")
+st.set_page_config(page_title="Runner", layout="wide")
+st.title("Run Tests")
 
 DATA_DIR = "data/scans"
 SCREENSHOT_DIR = "screenshots"
 excel_manager = ExcelManager(data_dir=DATA_DIR)
 setter = Setter()
-
-api_key = os.environ.get("GEMINI_API_KEY", "")
-if "gemini_api_key" not in st.session_state:
-    st.session_state.gemini_api_key = api_key
 
 scanned_urls = excel_manager.list_scanned_urls()
 
@@ -52,7 +47,8 @@ if url:
         take_screenshot = st.checkbox("Take screenshot", value=True)
 
     if st.button("Run Setter", type="primary"):
-        healer = Healer(ai_api_key=st.session_state.gemini_api_key)
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        healer = Healer(ai_api_key=api_key)
 
         if run_all:
             cases_to_run = list(range(len(test_data_rows)))
@@ -67,7 +63,7 @@ if url:
             st.subheader(f"Test Case: {case_name}")
 
             with st.spinner("Running self-heal check..."):
-                heal_report = asyncio.run(healer.heal(url, excel_manager))
+                heal_report = healer.heal(url, excel_manager)
 
             if heal_report["changed"] > 0 or heal_report["new"] > 0 or heal_report["removed"] > 0:
                 st.info(f"Self-heal: {heal_report['changed']} changed, {heal_report['new']} new, {heal_report['removed']} removed")
@@ -80,25 +76,25 @@ if url:
             }
 
             with st.spinner("Populating fields and verifying..."):
-                results = asyncio.run(setter.set_fields(
+                results = setter.set_fields(
                     url, element_map, test_values,
                     screenshot_dir=SCREENSHOT_DIR if take_screenshot else None,
                     run_id=run_id,
                     click_submit=click_submit,
-                ))
+                )
 
             pass_count = sum(1 for r in results if r["status"] == "PASS")
             fail_count = sum(1 for r in results if r["status"] == "FAIL")
             total = len(results)
 
             if fail_count == 0:
-                st.success(f"Result: {pass_count}/{total} PASSED")
+                st.success(f"Result: {pass_count}/{total} passed")
             else:
-                st.error(f"Result: {pass_count}/{total} PASSED | {fail_count} FAILED")
+                st.error(f"Result: {pass_count}/{total} passed, {fail_count} failed")
 
             for r in results:
-                icon = "✅" if r["status"] == "PASS" else "❌"
-                st.text(f"{icon} {r['element_name']} — Expected: {r['expected_value']} | Actual: {r['actual_value']}")
+                marker = "PASS" if r["status"] == "PASS" else "FAIL"
+                st.text(f"[{marker}] {r['element_name']} - Expected: {r['expected_value']} | Actual: {r['actual_value']}")
 
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for r in results:

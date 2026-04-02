@@ -1,5 +1,6 @@
 import os
 from playwright.async_api import async_playwright
+from core.scanner import _run_async
 
 
 NON_EDITABLE_TYPES = {"button"}
@@ -15,7 +16,7 @@ LOCATOR_PRIORITY = [
 
 
 class Setter:
-    async def set_fields(
+    def set_fields(
         self,
         url: str,
         element_map: list[dict],
@@ -28,10 +29,23 @@ class Setter:
         Populate form fields from test data and verify values.
         Returns list of verification result dicts.
         """
+        return _run_async(self._set_fields_async(
+            url, element_map, test_data, screenshot_dir, run_id, click_submit
+        ))
+
+    async def _set_fields_async(
+        self,
+        url: str,
+        element_map: list[dict],
+        test_data: dict,
+        screenshot_dir: str | None = None,
+        run_id: str | None = None,
+        click_submit: bool = False,
+    ) -> list[dict]:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            await page.goto(url, wait_until="networkidle")
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
             results = []
 

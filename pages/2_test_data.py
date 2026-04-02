@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 from core.excel_manager import ExcelManager
 
-st.set_page_config(page_title="Test Data", page_icon="📝", layout="wide")
-st.title("📝 Test Data Manager")
+st.set_page_config(page_title="Test Data", layout="wide")
+st.title("Test Data Manager")
 
 DATA_DIR = "data/scans"
 excel_manager = ExcelManager(data_dir=DATA_DIR)
@@ -42,7 +42,7 @@ if url:
         df["S.No"] = 1
 
     st.subheader("Test Cases")
-    st.caption("Edit the table below to add or modify test data. Click 'Save' when done.")
+    st.caption("Edit the table below to add or modify test data. Click Save when done.")
 
     edited_df = st.data_editor(
         df,

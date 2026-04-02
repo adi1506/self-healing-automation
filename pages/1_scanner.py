@@ -1,11 +1,10 @@
-import asyncio
 import streamlit as st
 from datetime import datetime
 from core.scanner import Scanner
 from core.excel_manager import ExcelManager
 
-st.set_page_config(page_title="Scanner", page_icon="🔍", layout="wide")
-st.title("🔍 Website Scanner")
+st.set_page_config(page_title="Scanner", layout="wide")
+st.title("Website Scanner")
 
 DATA_DIR = "data/scans"
 excel_manager = ExcelManager(data_dir=DATA_DIR)
@@ -15,7 +14,7 @@ url = st.text_input("Target URL", placeholder="https://your-app.com/form")
 
 if st.button("Scan Website", type="primary", disabled=not url):
     with st.spinner("Scanning page..."):
-        elements = asyncio.run(scanner.scan(url))
+        elements = scanner.scan(url)
 
     if elements:
         excel_manager.save_element_map(url, elements)
@@ -62,4 +61,9 @@ if scanned_urls:
     st.divider()
     st.subheader("Previously Scanned URLs")
     for scanned_url in scanned_urls:
-        st.text(scanned_url)
+        col1, col2 = st.columns([5, 1])
+        col1.text(scanned_url)
+        if col2.button("Delete", key=f"del_{scanned_url}"):
+            excel_manager.delete_url(scanned_url)
+            st.success(f"Deleted: {scanned_url}")
+            st.rerun()

@@ -5,3 +5,4 @@ google-generativeai
 pytest
 pytest-asyncio
 pandas
+python-dotenv
