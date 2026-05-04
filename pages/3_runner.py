@@ -13,6 +13,87 @@ SCREENSHOT_DIR = "screenshots"
 excel_manager = ExcelManager(data_dir=DATA_DIR)
 setter = Setter()
 
+run_mode = st.radio("Run mode", ["Single page", "Flow"], horizontal=True)
+
+if run_mode == "Flow":
+    import os as _os
+    from playwright.async_api import async_playwright
+    from core.recipes import load_recipe, load_flow, RecipeExecutor
+    from core.scanner import _run_async as _run_async_flow
+
+    DATA_FLOWS = "data/flows"
+    DATA_RECIPES = "data/recipes"
+
+    flow_files = [
+        f for f in _os.listdir(DATA_FLOWS) if f.endswith(".yaml")
+    ] if _os.path.isdir(DATA_FLOWS) else []
+
+    if not flow_files:
+        st.info("No flows yet — create one on the Flows page.")
+        st.stop()
+
+    chosen = st.selectbox("Flow", flow_files)
+    flow = load_flow(_os.path.join(DATA_FLOWS, chosen))
+    recipe_objs = [load_recipe(_os.path.join(DATA_RECIPES, f"{r}.yaml")) for r in flow["recipes"]]
+
+    user_fills = []
+    for ri, r in enumerate(recipe_objs):
+        for si, step in enumerate(r["steps"]):
+            if step.get("value") == "<USER_FILLS>":
+                user_fills.append((ri, si, r["name"], step.get("target")))
+
+    overrides = {}
+    for ri, si, rname, target in user_fills:
+        overrides[(ri, si)] = st.text_input(
+            f"{rname} → {target}", type="password", key=f"f_{ri}_{si}"
+        )
+
+    if st.button("Run flow", type="primary"):
+        for (ri, si), val in overrides.items():
+            if not val:
+                st.error("Fill all sensitive values.")
+                st.stop()
+            recipe_objs[ri]["steps"][si]["value"] = val
+
+        elements_by_page = {}
+        for r in recipe_objs:
+            if r["start_url"] not in elements_by_page:
+                elements_by_page[r["start_url"]] = excel_manager.read_element_map(r["start_url"])
+
+        async def _run_flow():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                executor = RecipeExecutor(elements_by_page=elements_by_page)
+                results = []
+                for r in recipe_objs:
+                    await page.goto(r["start_url"])
+                    results.append((r["name"], await executor.execute(page, r)))
+                await browser.close()
+                return results
+
+        with st.spinner("Running flow..."):
+            results = _run_async_flow(_run_flow())
+
+        overall = "success"
+        for rname, res in results:
+            ic = "PASS" if res["outcome_match"] else "FAIL"
+            st.markdown(f"### [{ic}] {rname}")
+            st.text(f"expected={res['expected_outcome']} actual={res['actual_outcome']}")
+            for sr in res["step_results"]:
+                lab = "PASS" if sr["status"] == "PASS" else "FAIL"
+                err = f" — {sr['error']}" if sr["error"] else ""
+                st.text(f"  [{lab}] step {sr['step_idx']}{err}")
+            if not res["outcome_match"]:
+                overall = "failure"
+
+        if overall == flow["expected_outcome"]:
+            st.success(f"Flow PASSED (expected {flow['expected_outcome']}, actual {overall})")
+        else:
+            st.error(f"Flow FAILED (expected {flow['expected_outcome']}, actual {overall})")
+
+    st.stop()
+
 scanned_urls = excel_manager.list_scanned_urls()
 
 if not scanned_urls:
@@ -22,6 +103,15 @@ if not scanned_urls:
 url = st.selectbox("Target URL", scanned_urls)
 
 if url:
+    excel_path = excel_manager.get_excel_path(url)
+    with open(excel_path, "rb") as f:
+        st.download_button(
+            label="Download Excel",
+            data=f.read(),
+            file_name=f"scan_{excel_manager.sanitize_url(url)}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
     test_data_rows = excel_manager.read_test_data(url)
 
     if not test_data_rows:
@@ -47,8 +137,9 @@ if url:
         take_screenshot = st.checkbox("Take screenshot", value=True)
 
     if st.button("Run Setter", type="primary"):
-        api_key = os.environ.get("GEMINI_API_KEY", "")
-        healer = Healer(ai_api_key=api_key)
+        ollama_host = os.environ.get("OLLAMA_HOST", "")
+        ollama_model = os.environ.get("OLLAMA_MODEL", "mistral")
+        healer = Healer(ai_host=ollama_host, ai_model=ollama_model)
 
         if run_all:
             cases_to_run = list(range(len(test_data_rows)))
