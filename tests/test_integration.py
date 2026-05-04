@@ -122,3 +122,45 @@ class TestFullWorkflow:
         email_elem = next((e for e in updated if e["element_name"] == "Email"), None)
         assert email_elem is not None
         assert email_elem["status"] in ("CHANGED", "UNCHANGED")
+
+
+class TestMultiPageFlow:
+    @pytest.mark.asyncio
+    async def test_crawl_then_recipe_execute(self, tmp_path):
+        from core.crawler import Crawler
+        from core.site_manager import SiteManager
+        from core.recipes import save_recipe, load_recipe, RecipeExecutor
+        from playwright.async_api import async_playwright
+
+        site_url = "file://" + os.path.abspath("test_form/site/index.html").replace("\\", "/")
+        crawler = Crawler()
+        pages = await crawler.crawl_async(site_url, max_pages=10, max_depth=3)
+        assert len(pages) >= 3
+
+        contact = next(p for p in pages if "contact.html" in p["url"])
+        recipe = {
+            "name": "send_message",
+            "goal": "submit a message",
+            "start_url": contact["url"],
+            "steps": [
+                {"action": "fill", "target": "Name", "value": "Alice"},
+                {"action": "fill", "target": "Message", "value": "hi"},
+            ],
+            "assertions": [],
+            "expected_outcome": "success",
+        }
+        recipe_path = str(tmp_path / "send_message.yaml")
+        save_recipe(recipe_path, recipe)
+        loaded = load_recipe(recipe_path)
+
+        elements_by_page = {p["url"]: p["elements"] for p in pages}
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(loaded["start_url"])
+            executor = RecipeExecutor(elements_by_page=elements_by_page)
+            result = await executor.execute(page, loaded)
+            await browser.close()
+
+        assert result["outcome_match"] is True
+        assert result["actual_outcome"] == "success"
