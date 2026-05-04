@@ -30,7 +30,7 @@ class TestFullWorkflow:
         manager = ExcelManager(data_dir=tmp_data_dir)
         scanner = Scanner()
         setter = Setter()
-        healer = Healer(ai_api_key="")
+        healer = Healer()
 
         # Step 1: Scan
         elements = await scanner.scan(sample_form_path)
@@ -80,11 +80,29 @@ class TestFullWorkflow:
         assert report["removed"] == 0
 
     @pytest.mark.asyncio
+    async def test_scan_current_page_extracts_same_elements(self, sample_form_path):
+        """scan_current_page on an already-loaded page returns the same elements as scan()."""
+        from playwright.async_api import async_playwright
+        scanner = Scanner()
+        elements_via_scan = await scanner._scan_async(sample_form_path)
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(sample_form_path, wait_until="domcontentloaded", timeout=60000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            elements_via_helper = await scanner.scan_current_page(page)
+            await browser.close()
+        assert [e["element_name"] for e in elements_via_helper] == [e["element_name"] for e in elements_via_scan]
+
+    @pytest.mark.asyncio
     async def test_heal_detects_broken_locator(self, sample_form_path, tmp_data_dir):
         """Heal should detect and fix a broken locator."""
         manager = ExcelManager(data_dir=tmp_data_dir)
         scanner = Scanner()
-        healer = Healer(ai_api_key="")
+        healer = Healer()
 
         # Scan
         elements = await scanner.scan(sample_form_path)

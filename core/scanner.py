@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import sys
 from playwright.async_api import async_playwright
@@ -25,73 +27,84 @@ class Scanner:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-
-            elements = []
-            sno = 1
-
-            # Scan input fields (text, email, tel, number, etc.)
-            inputs = await page.query_selector_all(
-                "input:not([type='radio']):not([type='checkbox']):not([type='hidden']):not([type='submit'])"
-            )
-            for inp in inputs:
-                elem = await self._extract_input(page, inp, sno)
-                if elem:
-                    elements.append(elem)
-                    sno += 1
-
-            # Scan textareas
-            textareas = await page.query_selector_all("textarea")
-            for ta in textareas:
-                elem = await self._extract_textarea(page, ta, sno)
-                if elem:
-                    elements.append(elem)
-                    sno += 1
-
-            # Scan select dropdowns
-            selects = await page.query_selector_all("select")
-            for sel in selects:
-                elem = await self._extract_select(page, sel, sno)
-                if elem:
-                    elements.append(elem)
-                    sno += 1
-
-            # Scan radio button groups (grouped by name)
-            radio_groups = await page.evaluate("""
-                () => {
-                    const radios = document.querySelectorAll('input[type="radio"]');
-                    const groups = {};
-                    radios.forEach(r => {
-                        if (r.name && !groups[r.name]) {
-                            groups[r.name] = true;
-                        }
-                    });
-                    return Object.keys(groups);
-                }
-            """)
-            for group_name in radio_groups:
-                elem = await self._extract_radio_group(page, group_name, sno)
-                if elem:
-                    elements.append(elem)
-                    sno += 1
-
-            # Scan checkboxes
-            checkboxes = await page.query_selector_all("input[type='checkbox']")
-            for cb in checkboxes:
-                elem = await self._extract_checkbox(page, cb, sno)
-                if elem:
-                    elements.append(elem)
-                    sno += 1
-
-            # Scan buttons
-            buttons = await page.query_selector_all("button, input[type='submit']")
-            for btn in buttons:
-                elem = await self._extract_button(page, btn, sno)
-                if elem:
-                    elements.append(elem)
-                    sno += 1
-
+            # Allow client-side rendered forms (SPA / schema-driven) to finish
+            # building DOM before we extract elements. Static forms hit idle
+            # almost immediately; dynamic forms wait for their fetch+render cycle.
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            elements = await self.scan_current_page(page)
             await browser.close()
             return elements
+
+    async def scan_current_page(self, page) -> list[dict]:
+        """Extract all interactive elements from an already-loaded Playwright page."""
+        elements = []
+        sno = 1
+
+        # Scan input fields (text, email, tel, number, etc.)
+        inputs = await page.query_selector_all(
+            "input:not([type='radio']):not([type='checkbox']):not([type='hidden']):not([type='submit'])"
+        )
+        for inp in inputs:
+            elem = await self._extract_input(page, inp, sno)
+            if elem:
+                elements.append(elem)
+                sno += 1
+
+        # Scan textareas
+        textareas = await page.query_selector_all("textarea")
+        for ta in textareas:
+            elem = await self._extract_textarea(page, ta, sno)
+            if elem:
+                elements.append(elem)
+                sno += 1
+
+        # Scan select dropdowns
+        selects = await page.query_selector_all("select")
+        for sel in selects:
+            elem = await self._extract_select(page, sel, sno)
+            if elem:
+                elements.append(elem)
+                sno += 1
+
+        # Scan radio button groups (grouped by name)
+        radio_groups = await page.evaluate("""
+            () => {
+                const radios = document.querySelectorAll('input[type="radio"]');
+                const groups = {};
+                radios.forEach(r => {
+                    if (r.name && !groups[r.name]) {
+                        groups[r.name] = true;
+                    }
+                });
+                return Object.keys(groups);
+            }
+        """)
+        for group_name in radio_groups:
+            elem = await self._extract_radio_group(page, group_name, sno)
+            if elem:
+                elements.append(elem)
+                sno += 1
+
+        # Scan checkboxes
+        checkboxes = await page.query_selector_all("input[type='checkbox']")
+        for cb in checkboxes:
+            elem = await self._extract_checkbox(page, cb, sno)
+            if elem:
+                elements.append(elem)
+                sno += 1
+
+        # Scan buttons
+        buttons = await page.query_selector_all("button, input[type='submit']")
+        for btn in buttons:
+            elem = await self._extract_button(page, btn, sno)
+            if elem:
+                elements.append(elem)
+                sno += 1
+
+        return elements
 
     async def _get_label_text(self, page, element) -> str:
         """Find the label text associated with an element."""
