@@ -1,8 +1,9 @@
 streamlit
 playwright
 openpyxl
-google-generativeai
+ollama
 pytest
 pytest-asyncio
 pandas
 python-dotenv
+pyyaml
