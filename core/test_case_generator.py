@@ -143,6 +143,72 @@ class TestCaseGenerator:
 
         return None
 
+    # --------------------------------------------------------- negative derivation
+    # Priority order for Compact mode — most distinctive first
+    _COMPACT_PRIORITY = ["pattern", "min", "max", "maxlength", "minlength", "type_email", "type_number", "required"]
+
+    def derive_negatives(self, fields: list[dict], mode: str = "compact") -> list[dict]:
+        """Return negative test descriptors. Each item:
+            {field, violation, value}
+        Mode 'compact' yields one row per field; 'thorough' yields one per violatable constraint.
+        """
+        results = []
+        for f in fields:
+            if (f.get("element_type") or "").lower() in ("button",):
+                continue
+            negatives = self._negatives_for_field(f)
+            if not negatives:
+                continue
+            if mode == "compact":
+                chosen = self._pick_compact(negatives)
+                if chosen:
+                    results.append(chosen)
+            else:
+                results.extend(negatives)
+        return results
+
+    def _negatives_for_field(self, field: dict) -> list[dict]:
+        name = field.get("element_name", "")
+        etype = (field.get("element_type") or "").lower()
+        out = []
+
+        if field.get("pattern"):
+            base = self.generate_value(field)  # a valid value
+            mutated = base.lower() if base != base.lower() else base[:-1] if len(base) > 1 else "x"
+            out.append({"field": name, "violation": "pattern", "value": mutated})
+
+        lo = self._to_number(field.get("min"))
+        hi = self._to_number(field.get("max"))
+        if lo is not None:
+            out.append({"field": name, "violation": "min", "value": str(lo - 1)})
+        if hi is not None:
+            out.append({"field": name, "violation": "max", "value": str(hi + 1)})
+
+        maxlen = self._to_number(field.get("maxlength"))
+        if maxlen and maxlen > 0:
+            out.append({"field": name, "violation": "maxlength", "value": "x" * (int(maxlen) + 1)})
+
+        minlen = self._to_number(field.get("minlength"))
+        if minlen and minlen > 1:
+            out.append({"field": name, "violation": "minlength", "value": "x" * (int(minlen) - 1)})
+
+        if etype == "input-email":
+            out.append({"field": name, "violation": "type_email", "value": "notanemail"})
+        if etype == "input-number":
+            out.append({"field": name, "violation": "type_number", "value": "abc"})
+
+        if field.get("required"):
+            out.append({"field": name, "violation": "required", "value": ""})
+
+        return out
+
+    def _pick_compact(self, negatives: list[dict]) -> dict | None:
+        by_violation = {n["violation"]: n for n in negatives}
+        for v in self._COMPACT_PRIORITY:
+            if v in by_violation:
+                return by_violation[v]
+        return negatives[0] if negatives else None
+
     # ---------------------------------------------------------------- helpers
     def _parse_options(self, raw: str) -> list[str]:
         return [o.strip() for o in (raw or "").split(",") if o.strip()]

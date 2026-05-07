@@ -109,3 +109,60 @@ class TestL3Dictionary:
         f = _field(element_name="Xyz Garbage Field", locator_label="Xyz Garbage Field")
         v = gen.generate_value(f)
         assert v == "Test 1234"
+
+
+class TestNegativeDerivation:
+    def test_compact_yields_one_per_field(self, gen):
+        fields = [
+            _field(element_name="Email", element_type="input-email", required=True),
+            _field(element_name="Customer Reference", pattern="[A-Z]{4}[0-9]{4}",
+                   maxlength="8", required=True),
+            _field(element_name="Age", element_type="input-number",
+                   min="18", max="120", required=True),
+        ]
+        negs = gen.derive_negatives(fields, mode="compact")
+        # One row per field — three rows
+        names = [n["field"] for n in negs]
+        assert sorted(names) == ["Age", "Customer Reference", "Email"]
+
+    def test_compact_chooses_pattern_over_required(self, gen):
+        fields = [
+            _field(element_name="Customer Reference", pattern="[A-Z]{4}[0-9]{4}",
+                   maxlength="8", required=True),
+        ]
+        negs = gen.derive_negatives(fields, mode="compact")
+        assert len(negs) == 1
+        assert negs[0]["violation"] == "pattern"
+        # Value should NOT match the pattern
+        assert not re.fullmatch(r"[A-Z]{4}[0-9]{4}", negs[0]["value"])
+
+    def test_thorough_yields_one_per_constraint(self, gen):
+        fields = [
+            _field(element_name="Customer Reference", pattern="[A-Z]{4}[0-9]{4}",
+                   maxlength="8", required=True),
+        ]
+        negs = gen.derive_negatives(fields, mode="thorough")
+        violations = sorted(n["violation"] for n in negs)
+        assert violations == ["maxlength", "pattern", "required"]
+
+    def test_required_only_field_compact_yields_required_violation(self, gen):
+        fields = [_field(element_name="City", required=True)]
+        negs = gen.derive_negatives(fields, mode="compact")
+        assert len(negs) == 1
+        assert negs[0]["violation"] == "required"
+        assert negs[0]["value"] == ""
+
+    def test_email_type_negative_has_no_at_sign(self, gen):
+        fields = [_field(element_name="Email", element_type="input-email", required=True)]
+        negs = gen.derive_negatives(fields, mode="compact")
+        chosen = negs[0]
+        assert "@" not in chosen["value"]
+
+    def test_min_max_violation_picks_below_min(self, gen):
+        fields = [_field(element_name="Age", element_type="input-number",
+                         min="18", max="120", required=True)]
+        negs = gen.derive_negatives(fields, mode="compact")
+        chosen = negs[0]
+        assert chosen["violation"] in ("min", "max")
+        # Either way, the value violates the range
+        assert int(chosen["value"]) < 18 or int(chosen["value"]) > 120
