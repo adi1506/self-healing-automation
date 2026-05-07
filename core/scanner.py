@@ -475,6 +475,32 @@ class Scanner:
             "healed_by": "",
         }
 
+    def scan_with_context(self, url: str) -> dict:
+        """Scan the page returning {'elements': [...], 'page_context': {...}}."""
+        return _run_async(self._scan_with_context_async(url))
+
+    async def _scan_with_context_async(self, url: str) -> dict:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            elements = await self.scan_current_page(page)
+            page_context = await self._extract_page_context(page)
+            await browser.close()
+            return {"elements": elements, "page_context": page_context}
+
+    async def _extract_page_context(self, page) -> dict:
+        title = (await page.title()) or ""
+        h1_el = await page.query_selector("h1")
+        h1 = (await h1_el.inner_text()).strip() if h1_el else ""
+        first_p_el = await page.query_selector("p")
+        first_paragraph = (await first_p_el.inner_text()).strip() if first_p_el else ""
+        return {"title": title, "h1": h1, "first_paragraph": first_paragraph}
+
     async def _extract_button(self, page, element, sno: int) -> dict | None:
         """Extract data from a button."""
         tag = await element.evaluate("el => el.tagName")

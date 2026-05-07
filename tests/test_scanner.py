@@ -138,3 +138,20 @@ class TestScannerConstraints:
         assert bio["pattern"] == ""
         assert str(bio["maxlength"]) == "100"
         assert bio["required"] is False
+
+
+class TestScannerPageContext:
+    def test_scan_returns_page_context(self, constrained_form_url):
+        scanner = Scanner()
+        result = scanner.scan_with_context(constrained_form_url)
+        ctx = result["page_context"]
+        assert "Constrained Registration" in ctx["title"]
+        assert ctx["h1"] == "Customer Onboarding"
+        assert "Register a new customer" in ctx["first_paragraph"]
+
+    def test_scan_with_context_returns_elements_too(self, constrained_form_url):
+        scanner = Scanner()
+        result = scanner.scan_with_context(constrained_form_url)
+        assert isinstance(result["elements"], list)
+        assert len(result["elements"]) > 0
+        assert result["elements"][0]["element_name"]
