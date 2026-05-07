@@ -208,11 +208,11 @@ Match logic: case-insensitive substring search across the field's label, name, i
 
 ### 5.5 New: per-field rule storage
 
-Per-field rules are user-typed plain-English instructions like "emails should always be @company.com". They live in a sidecar YAML next to the element map Excel:
+Per-field rules are user-typed plain-English instructions like "emails should always be @company.com". They live in a sidecar YAML alongside the element map Excel (the existing layout is flat — one Excel per URL, not a subdirectory):
 
 ```
-data/scans/<sanitized_url>/element_map.xlsx       # existing, gets new columns
-data/scans/<sanitized_url>/field_rules.yaml       # new, optional
+data/scans/<sanitized_url>.xlsx                # existing, gets new columns
+data/scans/<sanitized_url>.field_rules.yaml    # new, optional sidecar
 ```
 
 Schema:
