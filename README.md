@@ -48,6 +48,45 @@ set OLLAMA_MODEL=mistral
 
 The tool works fully without Ollama — AI matching is only used as a last-resort fallback.
 
+## AI-Generated Test Cases
+
+The Test Data Manager can auto-populate the test cases grid from a scanned form.
+Click **AI Generate Test Cases** and the tool produces:
+
+- One **happy-path** row with valid values for every field.
+- One **negative** row per field, varying the most distinctive constraint
+  (Compact mode, default). Switch to **Thorough** to get one negative row per
+  violatable constraint per field.
+
+How values are chosen, in priority order:
+
+1. Explicit DOM constraints — `pattern`, `min`, `max`, `maxlength`, `type`, `required`.
+2. The `autocomplete` token registry (e.g. `email`, `tel`, `postal-code`).
+3. A label dictionary at `data/field_dictionary.yaml` (PAN, GSTIN, SSN, etc. — extend freely).
+4. AI enrichment via Ollama+Mistral when the field has no explicit constraints
+   and you've supplied an **AI Context** (per row) or **Per-field rule** (per column).
+5. A typed fallback string respecting `maxlength`.
+
+### AI Context (per row)
+
+The grid has an **AI Context** column. Type a plain-English scenario for any
+row — e.g. *"Senior citizen from Mumbai"* — and the AI fills empty cells in
+that row to match. Click the **🔄 Regenerate this row** button to refresh that
+row using the new context.
+
+### Per-field rules (per column)
+
+The Field Reference table at the bottom of the page has an editable
+**Per-field rule** column. Type instructions like *"Always use Gmail addresses"*
+or *"Format: 4 letters + 4 digits"* and they apply to every row for that field.
+Rules are stored in `data/scans/<sanitized_url>.field_rules.yaml` and survive
+rescans.
+
+### Without Ollama
+
+The heuristic layers (1–3) and fallback work fully without Ollama. AI Context
+and Per-field rules are simply ignored when Ollama isn't reachable.
+
 ## Multi-Page Flows
 
 Beyond single-page testing, the tool can crawl an entire site and run
