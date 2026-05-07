@@ -1,6 +1,8 @@
 import os
+import re
 import pytest
 from core.scanner import Scanner
+from core.test_case_generator import TestCaseGenerator
 from core.setter import Setter
 from core.healer import Healer
 from core.excel_manager import ExcelManager
@@ -164,3 +166,34 @@ class TestMultiPageFlow:
 
         assert result["outcome_match"] is True
         assert result["actual_outcome"] == "success"
+
+
+@pytest.fixture
+def constrained_url():
+    path = os.path.abspath("test_form/v9_constrained.html")
+    return f"file:///{path.replace(os.sep, '/')}"
+
+
+def test_end_to_end_heuristic_generation(constrained_url):
+    """Scan v9_constrained.html → generate cases → assert quality."""
+    result = Scanner().scan_with_context(constrained_url)
+    elements = result["elements"]
+    page_context = result["page_context"]
+
+    gen = TestCaseGenerator(field_dictionary_path="data/field_dictionary.yaml")
+    rows = gen.generate(elements, page_context=page_context, mode="compact")
+
+    # First row is happy path; every constrained field has a valid value
+    happy = rows[0]
+    assert happy["test_case_name"] == "Happy path"
+    cust_ref_val = happy["values"]["Customer Reference"]
+    assert re.fullmatch(r"[A-Z]{4}[0-9]{4}", cust_ref_val), \
+        f"Customer Reference {cust_ref_val!r} does not match pattern"
+    age_val = int(happy["values"]["Age"])
+    assert 18 <= age_val <= 120
+
+    # At least one negative row per constrained field
+    negative_field_names = {r["test_case_name"].split(":")[0] for r in rows[1:]}
+    for required_field in {"Customer Reference", "Age", "Email", "First Name", "Country"}:
+        assert required_field in negative_field_names, \
+            f"missing negative case for {required_field}"
