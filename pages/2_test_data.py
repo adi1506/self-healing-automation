@@ -188,15 +188,39 @@ if url:
         st.success("Test data saved!")
 
     st.divider()
-    st.subheader("Field Reference")
-    ref_data = []
+    st.subheader("Field Reference & Per-Field Rules")
+    st.caption("Per-field rules are plain-English instructions sent to the AI for every "
+               "test case row. Example: \"Always use Gmail addresses\".")
+    ref_rows = []
     for elem in element_map:
         if elem["element_type"] in ("button",):
             continue
-        ref = {
-            "Field": elem["element_name"],
+        name = elem["element_name"]
+        ref_rows.append({
+            "Field": name,
             "Type": elem["element_type"],
             "Available Options": elem.get("available_options", ""),
+            "Per-field rule": field_rules.get(name, ""),
+        })
+    ref_df = pd.DataFrame(ref_rows)
+    edited_ref = st.data_editor(
+        ref_df,
+        use_container_width=True,
+        disabled=["Field", "Type", "Available Options"],
+        column_config={
+            "Per-field rule": st.column_config.TextColumn(
+                "Per-field rule",
+                help="Plain-English rule applied to this field across all test cases.",
+            ),
+        },
+        key="field_rules_editor",
+    )
+    if st.button("Save Per-Field Rules"):
+        new_rules = {
+            row["Field"]: (row["Per-field rule"] or "").strip()
+            for _, row in edited_ref.iterrows()
+            if (row["Per-field rule"] or "").strip()
         }
-        ref_data.append(ref)
-    st.dataframe(ref_data, use_container_width=True)
+        rules_store.save(url, new_rules)
+        st.success("Per-field rules saved.")
+        st.rerun()
