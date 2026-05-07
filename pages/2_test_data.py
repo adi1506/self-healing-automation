@@ -112,6 +112,54 @@ if url:
                     "AI Context columns were ignored. "
                     "Start `ollama serve` to enable AI enrichment.")
 
+    st.divider()
+    st.caption("Regenerate one row using its current AI Context (preserves manual values).")
+    col_pick, col_regen = st.columns([1, 1])
+    with col_pick:
+        existing_rows = excel_manager.read_test_data(url) or []
+        row_options = [f"Row {i+1}: {r.get('Test Case Name', '(unnamed)')}"
+                       for i, r in enumerate(existing_rows)]
+        chosen = st.selectbox("Row to regenerate", options=row_options) if row_options else None
+    with col_regen:
+        do_regen = st.button("🔄 Regenerate this row", disabled=not row_options)
+
+    if do_regen and chosen:
+        row_idx = row_options.index(chosen)
+        ai = AITestData()
+        generator = TestCaseGenerator(
+            field_dictionary_path="data/field_dictionary.yaml",
+            ai_client=ai if ai.is_available() else None,
+        )
+        target = existing_rows[row_idx]
+        ai_ctx = target.get("AI Context", "")
+        # Resolve a value per editable field, preserving manual entries
+        new_row = dict(target)
+        for f in element_map:
+            if f.get("element_type") == "button":
+                continue
+            name = f["element_name"]
+            existing_val = (target.get(name) or "").strip()
+            if existing_val:
+                continue  # preserve manual value
+            new_row[name] = generator._resolve_value(
+                field=f, page_context=page_context,
+                per_field_rule=field_rules.get(name, ""), ai_context=ai_ctx,
+            )
+
+        # Save back: rebuild full save_rows list, replacing only this index
+        save_rows = []
+        for i, r in enumerate(existing_rows):
+            source = new_row if i == row_idx else r
+            save_rows.append({
+                "sno": i + 1,
+                "test_case_name": source.get("Test Case Name", ""),
+                "ai_context": source.get("AI Context", ""),
+                **{name: source.get(name, "") for name in editable_names},
+            })
+        excel_manager.save_test_data(url, save_rows)
+        st.success(f"Regenerated row {row_idx + 1}.")
+        st.rerun()
+
     st.subheader("Test Cases")
     st.caption("Edit the table below to add or modify test data. Click Save when done.")
 
