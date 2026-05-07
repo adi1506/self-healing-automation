@@ -166,3 +166,40 @@ class TestNegativeDerivation:
         assert chosen["violation"] in ("min", "max")
         # Either way, the value violates the range
         assert int(chosen["value"]) < 18 or int(chosen["value"]) > 120
+
+
+class TestGenerateOrchestrator:
+    def test_generate_produces_happy_path_plus_one_negative_per_field_compact(self, gen):
+        fields = [
+            _field(element_name="Email", element_type="input-email", required=True),
+            _field(element_name="Customer Reference", pattern="[A-Z]{4}[0-9]{4}",
+                   maxlength="8", required=True),
+        ]
+        rows = gen.generate(fields, page_context={}, mode="compact")
+        # 1 happy path + 2 negatives
+        assert len(rows) == 3
+        happy = rows[0]
+        assert happy["test_case_name"] == "Happy path"
+        assert "@" in happy["values"]["Email"]
+        assert re.fullmatch(r"[A-Z]{4}[0-9]{4}", happy["values"]["Customer Reference"])
+
+        # Each negative row has the same fields populated, only the targeted field is invalid
+        neg_email = next(r for r in rows if "Email" in r["test_case_name"])
+        assert "@" not in neg_email["values"]["Email"]
+        assert re.fullmatch(r"[A-Z]{4}[0-9]{4}", neg_email["values"]["Customer Reference"])
+
+    def test_generate_produces_ai_context_column(self, gen):
+        fields = [_field(element_name="Email", element_type="input-email", required=True)]
+        rows = gen.generate(fields, page_context={}, mode="compact")
+        for r in rows:
+            assert "ai_context" in r
+            assert r["ai_context"] == ""
+
+    def test_generate_thorough_mode(self, gen):
+        fields = [
+            _field(element_name="Customer Reference", pattern="[A-Z]{4}[0-9]{4}",
+                   maxlength="8", required=True),
+        ]
+        rows = gen.generate(fields, page_context={}, mode="thorough")
+        # Happy + (pattern, maxlength, required) = 4
+        assert len(rows) == 4

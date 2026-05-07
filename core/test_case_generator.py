@@ -209,6 +209,53 @@ class TestCaseGenerator:
                 return by_violation[v]
         return negatives[0] if negatives else None
 
+    # -------------------------------------------------------------- orchestrator
+    def generate(
+        self,
+        fields: list[dict],
+        page_context: dict | None = None,
+        mode: str = "compact",
+        per_field_rules: dict[str, str] | None = None,
+        ai_contexts_by_row: dict[int, str] | None = None,
+    ) -> list[dict]:
+        """Produce a list of test case rows.
+
+        Each row is {test_case_name, ai_context, values: {field_name: str}}.
+        Row 0 is the happy path. Rows 1..N are negatives derived per `mode`.
+        Per-field rules and per-row AI contexts are accepted now and used by
+        the AI enrichment task; for the heuristic-only path they're ignored.
+        """
+        editable = [f for f in fields if (f.get("element_type") or "").lower() not in ("button",)]
+        valid_values = {f["element_name"]: self.generate_value(f) for f in editable}
+
+        rows = [{
+            "test_case_name": "Happy path",
+            "ai_context": "",
+            "values": dict(valid_values),
+        }]
+
+        for neg in self.derive_negatives(editable, mode=mode):
+            row_values = dict(valid_values)
+            row_values[neg["field"]] = neg["value"]
+            rows.append({
+                "test_case_name": f"{neg['field']}: {self._violation_label(neg['violation'])}",
+                "ai_context": "",
+                "values": row_values,
+            })
+        return rows
+
+    def _violation_label(self, violation: str) -> str:
+        return {
+            "pattern": "invalid format",
+            "min": "below min",
+            "max": "above max",
+            "maxlength": "too long",
+            "minlength": "too short",
+            "type_email": "not an email",
+            "type_number": "not a number",
+            "required": "missing required",
+        }.get(violation, violation)
+
     # ---------------------------------------------------------------- helpers
     def _parse_options(self, raw: str) -> list[str]:
         return [o.strip() for o in (raw or "").split(",") if o.strip()]
