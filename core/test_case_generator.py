@@ -58,7 +58,21 @@ class TestCaseGenerator:
 
     # --------------------------------------------------------------------- L1
     def generate_value(self, field: dict) -> str:
-        """Return one valid value for the given field via the layered resolver."""
+        """Return one valid value for the given field via the layered resolver.
+
+        Thin wrapper around _resolve_value for backwards-compatible single-field calls.
+        No AI enrichment fires here unless ai_client is set AND the field is bare freetext.
+        """
+        return self._resolve_value(field, page_context={}, per_field_rule="", ai_context="")
+
+    def _resolve_value(
+        self,
+        field: dict,
+        page_context: dict,
+        per_field_rule: str,
+        ai_context: str,
+    ) -> str:
+        """Resolve a single field's value through L1→L4 + fallback."""
         v = self._l1_dom_constraint(field)
         if v is not None:
             return v
@@ -68,8 +82,23 @@ class TestCaseGenerator:
         v = self._l3_dictionary(field)
         if v is not None:
             return v
-        # Layer 4 (LLM) added in a subsequent task
+        # L4: AI enrichment if client present and we have any context to work with
+        if self.ai_client is not None and (per_field_rule or ai_context or self._is_bare_freetext(field)):
+            ai_value = self.ai_client.generate_value(
+                field=field,
+                page_context=page_context,
+                per_field_rule=per_field_rule,
+                ai_context=ai_context,
+            )
+            if ai_value is not None:
+                return ai_value
         return self._fallback(field)
+
+    def _is_bare_freetext(self, field: dict) -> bool:
+        etype = (field.get("element_type") or "").lower()
+        return etype in ("input-text", "textarea") and not (
+            field.get("pattern") or field.get("autocomplete") or field.get("maxlength")
+        )
 
     # --------------------------------------------------------------------- L2
     def _l2_autocomplete(self, field: dict) -> str | None:
@@ -222,24 +251,37 @@ class TestCaseGenerator:
 
         Each row is {test_case_name, ai_context, values: {field_name: str}}.
         Row 0 is the happy path. Rows 1..N are negatives derived per `mode`.
-        Per-field rules and per-row AI contexts are accepted now and used by
-        the AI enrichment task; for the heuristic-only path they're ignored.
+        Per-field rules and per-row AI contexts are threaded to _resolve_value
+        which invokes L4 AI enrichment when appropriate.
         """
+        page_context = page_context or {}
+        per_field_rules = per_field_rules or {}
+        ai_contexts_by_row = ai_contexts_by_row or {}
         editable = [f for f in fields if (f.get("element_type") or "").lower() not in ("button",)]
-        valid_values = {f["element_name"]: self.generate_value(f) for f in editable}
+
+        def values_for_row(row_index: int) -> dict[str, str]:
+            ctx = ai_contexts_by_row.get(row_index, "")
+            return {
+                f["element_name"]: self._resolve_value(
+                    f, page_context, per_field_rules.get(f["element_name"], ""), ctx
+                )
+                for f in editable
+            }
 
         rows = [{
             "test_case_name": "Happy path",
-            "ai_context": "",
-            "values": dict(valid_values),
+            "ai_context": ai_contexts_by_row.get(0, ""),
+            "values": values_for_row(0),
         }]
 
-        for neg in self.derive_negatives(editable, mode=mode):
+        # Negatives reuse the row-0 valid values for the non-targeted fields
+        valid_values = rows[0]["values"]
+        for i, neg in enumerate(self.derive_negatives(editable, mode=mode), start=1):
             row_values = dict(valid_values)
             row_values[neg["field"]] = neg["value"]
             rows.append({
                 "test_case_name": f"{neg['field']}: {self._violation_label(neg['violation'])}",
-                "ai_context": "",
+                "ai_context": ai_contexts_by_row.get(i, ""),
                 "values": row_values,
             })
         return rows

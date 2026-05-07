@@ -203,3 +203,58 @@ class TestGenerateOrchestrator:
         rows = gen.generate(fields, page_context={}, mode="thorough")
         # Happy + (pattern, maxlength, required) = 4
         assert len(rows) == 4
+
+
+class TestAIEnrichment:
+    def test_ai_called_when_field_is_bare_freetext_and_ai_context_present(self):
+        from unittest.mock import MagicMock
+        ai = MagicMock()
+        ai.generate_value.return_value = "Senior citizen value"
+        gen = TestCaseGenerator(field_dictionary_path="data/field_dictionary.yaml", ai_client=ai)
+        rows = gen.generate(
+            [_field(element_name="Bio", element_type="textarea")],
+            page_context={"title": "Reg", "h1": "Sign up", "first_paragraph": ""},
+            mode="compact",
+            ai_contexts_by_row={0: "Senior citizen"},
+        )
+        # Happy path row uses the AI value
+        assert rows[0]["values"]["Bio"] == "Senior citizen value"
+        ai.generate_value.assert_called()
+
+    def test_ai_not_called_when_l1_resolves(self):
+        from unittest.mock import MagicMock
+        ai = MagicMock()
+        gen = TestCaseGenerator(field_dictionary_path="data/field_dictionary.yaml", ai_client=ai)
+        gen.generate(
+            [_field(element_name="Email", element_type="input-email")],
+            page_context={}, mode="compact",
+        )
+        # L1 resolves email type, so AI is not called
+        ai.generate_value.assert_not_called()
+
+    def test_ai_falls_back_to_heuristic_when_returns_none(self):
+        from unittest.mock import MagicMock
+        ai = MagicMock()
+        ai.generate_value.return_value = None  # AI fails
+        gen = TestCaseGenerator(field_dictionary_path="data/field_dictionary.yaml", ai_client=ai)
+        rows = gen.generate(
+            [_field(element_name="Bio", element_type="textarea")],
+            page_context={}, mode="compact",
+            ai_contexts_by_row={0: "Senior citizen"},
+        )
+        # Falls back to "Test 1234"
+        assert rows[0]["values"]["Bio"] == "Test 1234"
+
+    def test_per_field_rule_passed_to_ai(self):
+        from unittest.mock import MagicMock
+        ai = MagicMock()
+        ai.generate_value.return_value = "rahul@gmail.com"
+        gen = TestCaseGenerator(field_dictionary_path="data/field_dictionary.yaml", ai_client=ai)
+        gen.generate(
+            [_field(element_name="Bio", element_type="textarea")],
+            page_context={}, mode="compact",
+            per_field_rules={"Bio": "Make it about banking"},
+            ai_contexts_by_row={0: ""},
+        )
+        call_kwargs = ai.generate_value.call_args.kwargs
+        assert call_kwargs["per_field_rule"] == "Make it about banking"
