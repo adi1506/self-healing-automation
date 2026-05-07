@@ -17,6 +17,15 @@ if not scanned_urls:
 url = st.selectbox("Select Scanned URL", scanned_urls)
 
 if url:
+    excel_path = excel_manager.get_excel_path(url)
+    with open(excel_path, "rb") as f:
+        st.download_button(
+            label="Download Excel",
+            data=f.read(),
+            file_name=f"scan_{excel_manager.sanitize_url(url)}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
     element_map = excel_manager.read_element_map(url)
     editable_names = [
         e["element_name"] for e in element_map
@@ -25,13 +34,14 @@ if url:
 
     test_data = excel_manager.read_test_data(url)
 
-    columns = ["S.No", "Test Case Name"] + editable_names
+    columns = ["S.No", "Test Case Name", "AI Context"] + editable_names
     if test_data:
         rows = []
         for td in test_data:
             row = {
                 "S.No": td.get("S.No", ""),
                 "Test Case Name": td.get("Test Case Name", ""),
+                "AI Context": td.get("AI Context", ""),
             }
             for name in editable_names:
                 row[name] = td.get(name, "")
@@ -56,7 +66,11 @@ if url:
     if st.button("Save", type="primary"):
         save_rows = []
         for idx, row in edited_df.iterrows():
-            row_dict = {"sno": idx + 1, "test_case_name": row.get("Test Case Name", "")}
+            row_dict = {
+                "sno": idx + 1,
+                "test_case_name": row.get("Test Case Name", ""),
+                "ai_context": row.get("AI Context", ""),
+            }
             for name in editable_names:
                 row_dict[name] = row.get(name, "")
             save_rows.append(row_dict)
