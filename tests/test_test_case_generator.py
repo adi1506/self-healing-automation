@@ -61,3 +61,29 @@ class TestL1DOMConstraints:
         f = _field(element_type="input-text", maxlength="5")
         value = gen.generate_value(f)
         assert len(value) <= 5
+
+
+class TestL2Autocomplete:
+    def test_autocomplete_email(self, gen):
+        f = _field(autocomplete="email")
+        assert "@" in gen.generate_value(f)
+
+    def test_autocomplete_given_name(self, gen):
+        f = _field(autocomplete="given-name")
+        v = gen.generate_value(f)
+        assert v == "John"
+
+    def test_autocomplete_family_name(self, gen):
+        f = _field(autocomplete="family-name")
+        assert gen.generate_value(_field(autocomplete="family-name")) == "Doe"
+
+    def test_autocomplete_postal_code(self, gen):
+        assert gen.generate_value(_field(autocomplete="postal-code")) == "94105"
+
+    def test_autocomplete_cc_number(self, gen):
+        assert gen.generate_value(_field(autocomplete="cc-number")) == "4111111111111111"
+
+    def test_autocomplete_unknown_token_falls_through(self, gen):
+        # Should fall through to fallback, not crash
+        v = gen.generate_value(_field(autocomplete="bogus-token"))
+        assert v == "Test 1234"

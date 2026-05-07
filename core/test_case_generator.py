@@ -5,6 +5,34 @@ import re
 import yaml
 import exrex
 
+AUTOCOMPLETE_REGISTRY = {
+    "email": "test.user@example.com",
+    "tel": "9876543210",
+    "tel-national": "9876543210",
+    "given-name": "John",
+    "family-name": "Doe",
+    "name": "John Doe",
+    "username": "testuser",
+    "new-password": "Passw0rd!",
+    "current-password": "Passw0rd!",
+    "organization": "Acme Inc",
+    "street-address": "123 Main St",
+    "address-line1": "123 Main St",
+    "address-line2": "Apt 4B",
+    "address-level2": "Springfield",
+    "address-level1": "CA",
+    "postal-code": "94105",
+    "country": "US",
+    "country-name": "United States",
+    "bday": "1990-01-15",
+    "url": "https://example.com",
+    "cc-name": "John Doe",
+    "cc-number": "4111111111111111",
+    "cc-exp": "12/29",
+    "cc-csc": "123",
+    "cc-type": "Visa",
+}
+
 
 class TestCaseGenerator:
     """Heuristic + (later) AI-enriched generator of test case values for form fields.
@@ -34,8 +62,18 @@ class TestCaseGenerator:
         v = self._l1_dom_constraint(field)
         if v is not None:
             return v
-        # Layers 2, 3, 4 added in subsequent tasks
+        v = self._l2_autocomplete(field)
+        if v is not None:
+            return v
+        # Layers 3, 4 added in subsequent tasks
         return self._fallback(field)
+
+    # --------------------------------------------------------------------- L2
+    def _l2_autocomplete(self, field: dict) -> str | None:
+        token = (field.get("autocomplete") or "").strip().lower()
+        if not token:
+            return None
+        return AUTOCOMPLETE_REGISTRY.get(token)
 
     def _l1_dom_constraint(self, field: dict) -> str | None:
         etype = (field.get("element_type") or "").lower()
