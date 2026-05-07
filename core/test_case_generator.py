@@ -65,7 +65,10 @@ class TestCaseGenerator:
         v = self._l2_autocomplete(field)
         if v is not None:
             return v
-        # Layers 3, 4 added in subsequent tasks
+        v = self._l3_dictionary(field)
+        if v is not None:
+            return v
+        # Layer 4 (LLM) added in a subsequent task
         return self._fallback(field)
 
     # --------------------------------------------------------------------- L2
@@ -74,6 +77,30 @@ class TestCaseGenerator:
         if not token:
             return None
         return AUTOCOMPLETE_REGISTRY.get(token)
+
+    # --------------------------------------------------------------------- L3
+    def _l3_dictionary(self, field: dict) -> str | None:
+        haystack_parts = [
+            field.get("element_name", ""),
+            field.get("locator_label", ""),
+            field.get("locator_name", ""),
+            field.get("locator_id", ""),
+            field.get("placeholder", ""),
+        ]
+        haystack = " ".join(p for p in haystack_parts if p).lower()
+        if not haystack:
+            return None
+        for entry in self._dictionary.values():
+            for needle in entry.get("match", []):
+                if needle.lower() in haystack:
+                    regex = entry.get("regex")
+                    if regex:
+                        try:
+                            return exrex.getone(regex)
+                        except Exception:
+                            pass
+                    return entry.get("example", "")
+        return None
 
     def _l1_dom_constraint(self, field: dict) -> str | None:
         etype = (field.get("element_type") or "").lower()

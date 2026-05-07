@@ -87,3 +87,25 @@ class TestL2Autocomplete:
         # Should fall through to fallback, not crash
         v = gen.generate_value(_field(autocomplete="bogus-token"))
         assert v == "Test 1234"
+
+
+class TestL3Dictionary:
+    def test_label_pan_number_matches_dictionary(self, gen):
+        f = _field(element_name="PAN Number", locator_label="PAN Number")
+        v = gen.generate_value(f)
+        assert re.fullmatch(r"[A-Z]{5}[0-9]{4}[A-Z]", v)
+
+    def test_label_aadhaar_matches(self, gen):
+        f = _field(element_name="Aadhaar", locator_label="Aadhaar")
+        v = gen.generate_value(f)
+        assert re.fullmatch(r"[0-9]{12}", v)
+
+    def test_name_attr_matches_when_label_doesnt(self, gen):
+        f = _field(element_name="Cust Code", locator_label="", locator_name="ifsc_code")
+        v = gen.generate_value(f)
+        assert re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", v)
+
+    def test_no_dictionary_match_falls_through_to_fallback(self, gen):
+        f = _field(element_name="Xyz Garbage Field", locator_label="Xyz Garbage Field")
+        v = gen.generate_value(f)
+        assert v == "Test 1234"
