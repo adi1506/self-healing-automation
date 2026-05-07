@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 from core.excel_manager import ExcelManager
+from core.test_case_generator import TestCaseGenerator
+from core.ai_test_data import AITestData
+from core.field_rules import FieldRulesStore
 
 st.set_page_config(page_title="Test Data", layout="wide")
 st.title("Test Data Manager")
@@ -50,6 +53,64 @@ if url:
     else:
         df = pd.DataFrame([{col: "" for col in columns}], columns=columns)
         df["S.No"] = 1
+
+    rules_store = FieldRulesStore(data_dir=DATA_DIR)
+    field_rules = rules_store.read(url)
+    page_context = excel_manager.read_page_context(url)
+
+    col_btn, col_toggle = st.columns([1, 2])
+    with col_btn:
+        do_generate = st.button("AI Generate Test Cases", type="secondary")
+    with col_toggle:
+        compact = st.checkbox("Compact negatives (one per field)", value=True)
+        overwrite = st.checkbox("Overwrite existing values", value=False)
+
+    if do_generate:
+        ai = AITestData()
+        generator = TestCaseGenerator(
+            field_dictionary_path="data/field_dictionary.yaml",
+            ai_client=ai if ai.is_available() else None,
+        )
+        # Pull AI context from any rows the user already typed
+        existing_rows = excel_manager.read_test_data(url) or []
+        ai_contexts_by_row = {
+            i: (r.get("AI Context") or "") for i, r in enumerate(existing_rows)
+        }
+
+        rows = generator.generate(
+            fields=element_map,
+            page_context=page_context,
+            mode="compact" if compact else "thorough",
+            per_field_rules=field_rules,
+            ai_contexts_by_row=ai_contexts_by_row,
+        )
+
+        # Merge with existing user-entered values unless overwrite is checked
+        save_rows = []
+        for i, generated in enumerate(rows):
+            existing = existing_rows[i] if i < len(existing_rows) else {}
+            row_dict = {
+                "sno": i + 1,
+                "test_case_name": existing.get("Test Case Name") or generated["test_case_name"],
+                "ai_context": existing.get("AI Context") or generated["ai_context"],
+            }
+            for name in editable_names:
+                user_val = (existing.get(name) or "").strip()
+                gen_val = generated["values"].get(name, "")
+                if overwrite or not user_val:
+                    row_dict[name] = gen_val
+                else:
+                    row_dict[name] = user_val
+            save_rows.append(row_dict)
+
+        excel_manager.save_test_data(url, save_rows)
+        st.success(f"Generated {len(save_rows)} test cases.")
+        st.rerun()
+
+        if not ai.is_available():
+            st.info("Ollama not reachable — used heuristic generation only. "
+                    "AI Context columns were ignored. "
+                    "Start `ollama serve` to enable AI enrichment.")
 
     st.subheader("Test Cases")
     st.caption("Edit the table below to add or modify test data. Click Save when done.")
