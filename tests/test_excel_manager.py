@@ -372,3 +372,29 @@ class TestStatusHighlighting:
         ws = wb["Element Map"]
         fill_color = ws.cell(row=2, column=1).fill.start_color.rgb
         assert "FFA500" in fill_color
+
+
+def test_element_map_round_trips_constraint_columns(tmp_path):
+    em = ExcelManager(data_dir=str(tmp_path))
+    url = "http://example.com/form"
+    elements = [
+        {
+            "sno": 1, "element_name": "Customer Reference", "element_type": "input-text",
+            "locator_id": "#custRef", "locator_name": "custRef", "locator_css": "input#custRef",
+            "locator_xpath": "//*[@id='custRef']", "locator_data_testid": "",
+            "locator_label": "Customer Reference", "placeholder": "",
+            "available_options": "", "current_value": "",
+            "status": "NEW", "change_details": "", "healed_by": "",
+            "pattern": "[A-Z]{4}[0-9]{4}", "title_attr": "4 letters + 4 digits",
+            "minlength": "", "maxlength": "8",
+            "min": "", "max": "", "autocomplete": "",
+            "inputmode": "", "required": True,
+            "helper_text": "Format: ABCD1234",
+        },
+    ]
+    em.save_element_map(url, elements)
+    read_back = em.read_element_map(url)
+    assert read_back[0]["pattern"] == "[A-Z]{4}[0-9]{4}"
+    assert read_back[0]["maxlength"] in (8, "8")
+    assert read_back[0]["required"] is True
+    assert read_back[0]["helper_text"] == "Format: ABCD1234"

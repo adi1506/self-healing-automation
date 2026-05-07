@@ -1,6 +1,7 @@
 import os
 import re
 from datetime import datetime
+from zipfile import BadZipFile
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 
@@ -19,15 +20,27 @@ ELEMENT_MAP_HEADERS = [
     "Locator Data-TestID", "Locator Label",
     "Placeholder", "Available Options", "Current Value",
     "Status", "Change Details", "Healed By", "Last Scanned",
+    "Pattern", "Title", "Min Length", "Max Length",
+    "Min Value", "Max Value", "Required", "Autocomplete", "Helper Text",
 ]
 
-ELEMENT_MAP_KEYS = [
+LAST_SCANNED_COL = 16
+
+# Position-aligned keys for Element Map; None marks the Last Scanned column
+# which is written separately as a timestamp.
+EXTENDED_ELEMENT_MAP_KEYS = [
     "sno", "element_name", "element_type",
     "locator_id", "locator_name", "locator_css", "locator_xpath",
     "locator_data_testid", "locator_label",
     "placeholder", "available_options", "current_value",
     "status", "change_details", "healed_by",
+    None,  # column 16 = "Last Scanned"
+    "pattern", "title_attr", "minlength", "maxlength",
+    "min", "max", "required", "autocomplete", "helper_text",
 ]
+
+# Kept for any callers that iterate the original 15 keys
+ELEMENT_MAP_KEYS = [k for k in EXTENDED_ELEMENT_MAP_KEYS[:15]]
 
 RUN_RESULTS_HEADERS = [
     "Run ID", "Timestamp", "Test Case Name", "Element Name",
@@ -63,6 +76,24 @@ class ExcelManager:
     def get_excel_path(self, url: str) -> str:
         """Get the Excel file path for a given URL."""
         return os.path.join(self.data_dir, f"{self.sanitize_url(url)}.xlsx")
+
+    def _save_workbook(self, wb, path: str):
+        """Atomically save a workbook: write to a temp file, then replace.
+        Prevents readers from seeing a half-written zip if a save is interrupted
+        or read concurrently."""
+        tmp_path = path + ".tmp"
+        wb.save(tmp_path)
+        os.replace(tmp_path, path)
+
+    def _load_workbook(self, path: str):
+        """Load a workbook with a clearer error if the file is corrupt."""
+        try:
+            return load_workbook(path)
+        except BadZipFile as e:
+            raise RuntimeError(
+                f"Excel file is corrupt or empty: {path}. "
+                "Re-scan the URL from the Scanner page to regenerate it."
+            ) from e
 
     def excel_exists(self, url: str) -> bool:
         """Check if an Excel file exists for the given URL."""
@@ -134,9 +165,13 @@ class ExcelManager:
         path = self.get_excel_path(url)
         self._save_url_mapping(url)
 
+        wb = None
         if os.path.exists(path):
-            wb = load_workbook(path)
-        else:
+            try:
+                wb = load_workbook(path)
+            except BadZipFile:
+                wb = None
+        if wb is None:
             wb = Workbook()
             wb.remove(wb.active)
 
@@ -149,9 +184,11 @@ class ExcelManager:
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for row_idx, elem in enumerate(elements, 2):
-            for col_idx, key in enumerate(ELEMENT_MAP_KEYS, 1):
+            for col_idx, key in enumerate(EXTENDED_ELEMENT_MAP_KEYS, 1):
+                if key is None:
+                    continue
                 ws.cell(row=row_idx, column=col_idx, value=elem.get(key, ""))
-            ws.cell(row=row_idx, column=len(ELEMENT_MAP_HEADERS), value=timestamp)
+            ws.cell(row=row_idx, column=LAST_SCANNED_COL, value=timestamp)
 
             status = elem.get("status", "")
             if status in STATUS_FILLS:
@@ -195,7 +232,7 @@ class ExcelManager:
                 for col, header in enumerate(headers, 1):
                     ws_other.cell(row=1, column=col, value=header)
 
-        wb.save(path)
+        self._save_workbook(wb, path)
         return path
 
     def read_element_map(self, url: str) -> list[dict]:
@@ -204,18 +241,24 @@ class ExcelManager:
         if not os.path.exists(path):
             return []
 
-        wb = load_workbook(path)
+        wb = self._load_workbook(path)
         ws = wb["Element Map"]
         elements = []
         for row in range(2, ws.max_row + 1):
             if ws.cell(row=row, column=1).value is None:
                 break
             elem = {}
-            for col_idx, key in enumerate(ELEMENT_MAP_KEYS, 1):
+            for col_idx, key in enumerate(EXTENDED_ELEMENT_MAP_KEYS, 1):
+                if key is None:
+                    continue
                 raw = ws.cell(row=row, column=col_idx).value
                 elem[key] = raw if raw is not None else ""
-            raw = ws.cell(row=row, column=len(ELEMENT_MAP_HEADERS)).value
-            elem["last_scanned"] = raw if raw is not None else ""
+            # Last Scanned at column 16
+            raw_ts = ws.cell(row=row, column=LAST_SCANNED_COL).value
+            elem["last_scanned"] = raw_ts if raw_ts is not None else ""
+            # Coerce booleans for `required` (it round-trips through Excel as True/False or "")
+            req = elem.get("required", "")
+            elem["required"] = bool(req) if req != "" else False
             elements.append(elem)
         return elements
 
@@ -224,7 +267,7 @@ class ExcelManager:
         path = self.get_excel_path(url)
         if not os.path.exists(path):
             return
-        wb = load_workbook(path)
+        wb = self._load_workbook(path)
         ws = wb["Test Data"]
 
         headers = []
@@ -243,12 +286,12 @@ class ExcelManager:
                 value = test_row.get(key) or test_row.get(header, "")
                 ws.cell(row=row_idx, column=col_idx, value=value)
 
-        wb.save(path)
+        self._save_workbook(wb, path)
 
     def read_test_data(self, url: str) -> list[dict]:
         """Read test data rows from the Test Data sheet."""
         path = self.get_excel_path(url)
-        wb = load_workbook(path)
+        wb = self._load_workbook(path)
         ws = wb["Test Data"]
 
         headers = []
@@ -277,7 +320,7 @@ class ExcelManager:
         path = self.get_excel_path(url)
         if not os.path.exists(path):
             return
-        wb = load_workbook(path)
+        wb = self._load_workbook(path)
         ws = wb[sheet_name]
 
         next_row = 2
@@ -293,7 +336,7 @@ class ExcelManager:
                     ws.cell(row=next_row, column=col_idx, value=data_val)
                     break
 
-        wb.save(path)
+        self._save_workbook(wb, path)
 
     def append_run_result(self, url: str, result: dict):
         """Append a run result row to the Run Results sheet."""
@@ -325,7 +368,7 @@ class ExcelManager:
         if not os.path.exists(path):
             return []
 
-        wb = load_workbook(path)
+        wb = self._load_workbook(path)
         ws = wb[sheet_name]
         keys = [self._normalize_key(h) for h in headers]
 
