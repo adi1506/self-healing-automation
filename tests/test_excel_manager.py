@@ -398,3 +398,27 @@ def test_element_map_round_trips_constraint_columns(tmp_path):
     assert read_back[0]["maxlength"] in (8, "8")
     assert read_back[0]["required"] is True
     assert read_back[0]["helper_text"] == "Format: ABCD1234"
+
+
+def test_test_data_sheet_includes_ai_context_column(tmp_path):
+    em = ExcelManager(data_dir=str(tmp_path))
+    url = "http://example.com/form"
+    elements = [
+        {"sno": 1, "element_name": "Email", "element_type": "input-email",
+         "locator_id": "", "locator_name": "email", "locator_css": "", "locator_xpath": "",
+         "locator_data_testid": "", "locator_label": "Email",
+         "placeholder": "", "available_options": "", "current_value": "",
+         "status": "NEW", "change_details": "", "healed_by": "",
+         "pattern": "", "title_attr": "", "minlength": "", "maxlength": "",
+         "min": "", "max": "", "autocomplete": "email", "inputmode": "",
+         "required": False, "helper_text": ""},
+    ]
+    em.save_element_map(url, elements)
+
+    em.save_test_data(url, [
+        {"sno": 1, "test_case_name": "Happy path", "ai_context": "Senior citizen", "Email": "a@b.com"},
+    ])
+    rows = em.read_test_data(url)
+    assert rows[0]["AI Context"] == "Senior citizen"
+    assert rows[0]["Test Case Name"] == "Happy path"
+    assert rows[0]["Email"] == "a@b.com"

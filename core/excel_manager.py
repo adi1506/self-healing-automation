@@ -200,13 +200,18 @@ class ExcelManager:
             ws_td = wb.create_sheet("Test Data")
             ws_td.cell(row=1, column=1, value="S.No")
             ws_td.cell(row=1, column=2, value="Test Case Name")
-            col = 3
+            ws_td.cell(row=1, column=3, value="AI Context")
+            col = 4
             for elem in elements:
                 if elem.get("element_type") not in NON_EDITABLE_TYPES:
                     ws_td.cell(row=1, column=col, value=elem["element_name"])
                     col += 1
         else:
             ws_td = wb["Test Data"]
+            # Backfill AI Context column for older sheets that don't have it
+            if ws_td.cell(row=1, column=3).value != "AI Context":
+                ws_td.insert_cols(3)
+                ws_td.cell(row=1, column=3, value="AI Context")
             existing_headers = []
             for col in range(3, ws_td.max_column + 1):
                 val = ws_td.cell(row=1, column=col).value
