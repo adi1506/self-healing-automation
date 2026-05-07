@@ -55,6 +55,8 @@ HEAL_HISTORY_HEADERS = [
     "Heal ID", "Timestamp", "Element Name", "Change Type", "Change Details", "Healed By",
 ]
 
+PAGE_CONTEXT_HEADERS = ["Title", "H1", "First Paragraph"]
+
 # Element types that are NOT editable (excluded from Test Data sheet)
 NON_EDITABLE_TYPES = {"button"}
 
@@ -366,6 +368,37 @@ class ExcelManager:
     def read_heal_history(self, url: str) -> list[dict]:
         """Read all heal history entries."""
         return self._read_sheet(url, "Heal History", HEAL_HISTORY_HEADERS)
+
+    def save_page_context(self, url: str, ctx: dict) -> None:
+        """Save page-level context (title, h1, first paragraph) to the Page Context sheet."""
+        path = self.get_excel_path(url)
+        if not os.path.exists(path):
+            return
+        wb = self._load_workbook(path)
+        if "Page Context" in wb.sheetnames:
+            del wb["Page Context"]
+        ws = wb.create_sheet("Page Context")
+        for col, header in enumerate(PAGE_CONTEXT_HEADERS, 1):
+            ws.cell(row=1, column=col, value=header)
+        ws.cell(row=2, column=1, value=ctx.get("title", ""))
+        ws.cell(row=2, column=2, value=ctx.get("h1", ""))
+        ws.cell(row=2, column=3, value=ctx.get("first_paragraph", ""))
+        self._save_workbook(wb, path)
+
+    def read_page_context(self, url: str) -> dict:
+        """Read page-level context from the Page Context sheet."""
+        path = self.get_excel_path(url)
+        if not os.path.exists(path):
+            return {"title": "", "h1": "", "first_paragraph": ""}
+        wb = self._load_workbook(path)
+        if "Page Context" not in wb.sheetnames:
+            return {"title": "", "h1": "", "first_paragraph": ""}
+        ws = wb["Page Context"]
+        return {
+            "title": ws.cell(row=2, column=1).value or "",
+            "h1": ws.cell(row=2, column=2).value or "",
+            "first_paragraph": ws.cell(row=2, column=3).value or "",
+        }
 
     def _read_sheet(self, url: str, sheet_name: str, headers: list[str]) -> list[dict]:
         """Generic method to read all rows from a sheet."""

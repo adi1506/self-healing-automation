@@ -422,3 +422,24 @@ def test_test_data_sheet_includes_ai_context_column(tmp_path):
     assert rows[0]["AI Context"] == "Senior citizen"
     assert rows[0]["Test Case Name"] == "Happy path"
     assert rows[0]["Email"] == "a@b.com"
+
+
+def test_page_context_round_trip(tmp_path):
+    em = ExcelManager(data_dir=str(tmp_path))
+    url = "http://example.com/form"
+    em.save_element_map(url, [])  # ensure workbook exists
+    em.save_page_context(url, {
+        "title": "Customer Onboarding",
+        "h1": "Sign up",
+        "first_paragraph": "Welcome to FINN bank.",
+    })
+    ctx = em.read_page_context(url)
+    assert ctx["title"] == "Customer Onboarding"
+    assert ctx["h1"] == "Sign up"
+    assert ctx["first_paragraph"] == "Welcome to FINN bank."
+
+def test_page_context_returns_empty_when_unset(tmp_path):
+    em = ExcelManager(data_dir=str(tmp_path))
+    url = "http://example.com/form"
+    em.save_element_map(url, [])
+    assert em.read_page_context(url) == {"title": "", "h1": "", "first_paragraph": ""}
