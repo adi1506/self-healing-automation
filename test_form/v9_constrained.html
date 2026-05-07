@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Sample Form — Constrained Registration</title>
+</head>
+<body>
+  <h1>Customer Onboarding</h1>
+  <p>Register a new customer. Customer reference must follow the FINN bank format.</p>
+  <form id="constrainedForm">
+    <div>
+      <label for="firstName">First Name</label>
+      <input type="text" id="firstName" name="firstName" autocomplete="given-name" required />
+    </div>
+    <div>
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" autocomplete="email" required />
+    </div>
+    <div>
+      <label for="custRef">Customer Reference</label>
+      <input type="text" id="custRef" name="custRef" required
+             pattern="[A-Z]{4}[0-9]{4}" maxlength="8"
+             title="4 uppercase letters followed by 4 digits" />
+      <small class="hint">Format: ABCD1234 (e.g. FINN0316)</small>
+    </div>
+    <div>
+      <label for="age">Age</label>
+      <input type="number" id="age" name="age" required min="18" max="120" />
+    </div>
+    <div>
+      <label for="bio">Short Bio</label>
+      <textarea id="bio" name="bio" maxlength="100"></textarea>
+    </div>
+    <div>
+      <label for="country">Country</label>
+      <select id="country" name="country" required>
+        <option value="">Select Country</option>
+        <option value="India">India</option>
+        <option value="USA">USA</option>
+        <option value="UK">UK</option>
+      </select>
+    </div>
+    <button type="submit">Register</button>
+  </form>
+</body>
+</html>
