@@ -65,10 +65,13 @@ if st.button("Scan", type="primary", disabled=not url):
                         st.text("No elements scanned.")
     else:
         with st.spinner("Scanning page..."):
-            elements = scanner.scan(url)
+            result = scanner.scan_with_context(url)
+            elements = result["elements"]
+            page_context = result["page_context"]
 
         if elements:
             excel_manager.save_element_map(url, elements)
+            excel_manager.save_page_context(url, page_context)
             scan_id = f"SCAN-{datetime.now().strftime('%Y%m%d%H%M%S')}"
             excel_manager.append_scan_history(url, {
                 "scan_id": scan_id,
