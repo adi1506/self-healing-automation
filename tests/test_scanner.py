@@ -95,3 +95,46 @@ class TestScanElements:
         elements = await scanner.scan(sample_form_path)
         for elem in elements:
             assert elem["status"] == "NEW"
+
+
+@pytest.fixture
+def constrained_form_url():
+    path = os.path.abspath("test_form/v9_constrained.html")
+    return f"file:///{path.replace(os.sep, '/')}"
+
+
+class TestScannerConstraints:
+    def test_captures_pattern_and_maxlength(self, constrained_form_url):
+        scanner = Scanner()
+        elements = scanner.scan(constrained_form_url)
+        cust_ref = next(e for e in elements if e["element_name"] == "Customer Reference")
+        assert cust_ref["pattern"] == "[A-Z]{4}[0-9]{4}"
+        assert str(cust_ref["maxlength"]) == "8"
+
+    def test_captures_min_max_required(self, constrained_form_url):
+        scanner = Scanner()
+        elements = scanner.scan(constrained_form_url)
+        age = next(e for e in elements if e["element_name"] == "Age")
+        assert str(age["min"]) == "18"
+        assert str(age["max"]) == "120"
+        assert age["required"] is True
+
+    def test_captures_autocomplete(self, constrained_form_url):
+        scanner = Scanner()
+        elements = scanner.scan(constrained_form_url)
+        first_name = next(e for e in elements if e["element_name"] == "First Name")
+        assert first_name["autocomplete"] == "given-name"
+
+    def test_captures_helper_text_via_sibling(self, constrained_form_url):
+        scanner = Scanner()
+        elements = scanner.scan(constrained_form_url)
+        cust_ref = next(e for e in elements if e["element_name"] == "Customer Reference")
+        assert "ABCD1234" in cust_ref["helper_text"]
+
+    def test_legacy_fields_have_blank_constraints(self, constrained_form_url):
+        scanner = Scanner()
+        elements = scanner.scan(constrained_form_url)
+        bio = next(e for e in elements if e["element_name"] == "Short Bio")
+        assert bio["pattern"] == ""
+        assert str(bio["maxlength"]) == "100"
+        assert bio["required"] is False

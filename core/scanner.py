@@ -230,6 +230,66 @@ class Scanner:
             "locator_data_testid": data_testid,
         }
 
+    async def _get_constraint_attrs(self, page, element) -> dict:
+        """Capture HTML5 validation + semantic attributes for a form field."""
+        pattern = await element.get_attribute("pattern") or ""
+        title_attr = await element.get_attribute("title") or ""
+        minlength = await element.get_attribute("minlength") or ""
+        maxlength = await element.get_attribute("maxlength") or ""
+        min_val = await element.get_attribute("min") or ""
+        max_val = await element.get_attribute("max") or ""
+        autocomplete = await element.get_attribute("autocomplete") or ""
+        inputmode = await element.get_attribute("inputmode") or ""
+        required_attr = await element.get_attribute("required")
+        required = required_attr is not None
+
+        helper_text = await element.evaluate("""
+            el => {
+                // Resolve aria-describedby first
+                const describedby = el.getAttribute('aria-describedby');
+                if (describedby) {
+                    const ref = document.getElementById(describedby);
+                    if (ref) return ref.textContent.trim();
+                }
+                // Walk up to the immediate label/group, look for sibling helper text
+                const candidates = ['small', '[class*="hint"]', '[class*="help"]'];
+                let parent = el.parentElement;
+                for (let i = 0; i < 3 && parent; i++) {
+                    for (const sel of candidates) {
+                        const node = parent.querySelector(sel);
+                        if (node && !node.contains(el)) {
+                            const text = node.textContent.trim();
+                            if (text) return text;
+                        }
+                    }
+                    parent = parent.parentElement;
+                }
+                // Immediate text node sibling after the input
+                let sib = el.nextSibling;
+                while (sib) {
+                    if (sib.nodeType === Node.TEXT_NODE) {
+                        const t = sib.textContent.trim();
+                        if (t) return t;
+                    }
+                    sib = sib.nextSibling;
+                }
+                return '';
+            }
+        """)
+
+        return {
+            "pattern": pattern,
+            "title_attr": title_attr,
+            "minlength": minlength,
+            "maxlength": maxlength,
+            "min": min_val,
+            "max": max_val,
+            "autocomplete": autocomplete,
+            "inputmode": inputmode,
+            "required": required,
+            "helper_text": helper_text,
+        }
+
     async def _extract_input(self, page, element, sno: int) -> dict | None:
         """Extract data from an input element."""
         input_type = await element.get_attribute("type") or "text"
@@ -238,6 +298,7 @@ class Scanner:
             return None
 
         locators = await self._get_common_locators(page, element)
+        constraints = await self._get_constraint_attrs(page, element)
         label_text = await self._get_label_text(page, element)
         placeholder = await element.get_attribute("placeholder") or ""
         value = await element.input_value() or ""
@@ -247,6 +308,7 @@ class Scanner:
             "element_name": element_name,
             "element_type": f"input-{input_type}",
             **locators,
+            **constraints,
             "locator_label": label_text,
             "placeholder": placeholder,
             "available_options": "",
@@ -263,6 +325,7 @@ class Scanner:
             return None
 
         locators = await self._get_common_locators(page, element)
+        constraints = await self._get_constraint_attrs(page, element)
         label_text = await self._get_label_text(page, element)
         placeholder = await element.get_attribute("placeholder") or ""
         value = await element.input_value() or ""
@@ -272,6 +335,7 @@ class Scanner:
             "element_name": element_name,
             "element_type": "textarea",
             **locators,
+            **constraints,
             "locator_label": label_text,
             "placeholder": placeholder,
             "available_options": "",
@@ -288,6 +352,7 @@ class Scanner:
             return None
 
         locators = await self._get_common_locators(page, element)
+        constraints = await self._get_constraint_attrs(page, element)
         label_text = await self._get_label_text(page, element)
 
         options = await element.evaluate("""
@@ -304,6 +369,7 @@ class Scanner:
             "element_name": element_name,
             "element_type": "select",
             **locators,
+            **constraints,
             "locator_label": label_text,
             "placeholder": "",
             "available_options": ", ".join(options),
@@ -365,12 +431,14 @@ class Scanner:
                 selected = value
 
         locators = await self._get_common_locators(page, first_radio)
+        constraints = await self._get_constraint_attrs(page, first_radio)
 
         return {
             "sno": sno,
             "element_name": group_label,
             "element_type": "radio",
             **locators,
+            **constraints,
             "locator_label": group_label,
             "placeholder": "",
             "available_options": ", ".join(options),
@@ -389,6 +457,7 @@ class Scanner:
             return None
 
         locators = await self._get_common_locators(page, element)
+        constraints = await self._get_constraint_attrs(page, element)
         is_checked = await element.is_checked()
 
         return {
@@ -396,6 +465,7 @@ class Scanner:
             "element_name": element_name,
             "element_type": "checkbox",
             **locators,
+            **constraints,
             "locator_label": element_name,
             "placeholder": "",
             "available_options": "checked, unchecked",
@@ -415,12 +485,18 @@ class Scanner:
             return None
 
         locators = await self._get_common_locators(page, element)
+        constraints = {
+            "pattern": "", "title_attr": "", "minlength": "", "maxlength": "",
+            "min": "", "max": "", "autocomplete": "", "inputmode": "",
+            "required": False, "helper_text": "",
+        }
 
         return {
             "sno": sno,
             "element_name": text,
             "element_type": "button",
             **locators,
+            **constraints,
             "locator_label": text,
             "placeholder": "",
             "available_options": "",
