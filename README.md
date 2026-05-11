@@ -20,14 +20,19 @@ streamlit run app.py
 
 ## Features
 
-- **Scanner** — Extract all form elements with multiple locator strategies
-- **Test Data Manager** — Manage multiple test case data sets inline
-- **Runner** — Populate forms, verify values, take screenshots
-- **Self-Healer** — Auto-detect and fix broken selectors:
-  - Level 1: Try alternative stored selectors
-  - Level 2: Attribute-based fingerprint matching
-  - Level 3: Ollama (Mistral) semantic matching (optional)
-- **History** — Full audit trail of scans, runs, and healing events
+The app has five pages, all browser-driven (no filesystem editing required):
+
+- **Dashboard** — Pass/Fail/Healed counters and recent runs feed.
+- **Scenarios** — Build a Scenario (Steps + optional Dataset + Runs + Settings tabs).
+  Generate data rows with AI, upload CSV/XLSX in bulk, or edit inline.
+  A Scenario with a Dataset runs once per row.
+- **Library** — Scanned pages as reusable assets. Single-page or crawl. Download
+  element-map Excel for sharing.
+- **Reports** — Unified Run history / Healing log / Activity feed.
+- **Settings** — Ollama config, storage paths, on-demand migration re-run.
+
+Existing recipes, flows, and per-scan Test Data grids are auto-migrated into
+Scenarios on first launch (idempotent — old files remain untouched).
 
 ## Ollama (Optional)
 
