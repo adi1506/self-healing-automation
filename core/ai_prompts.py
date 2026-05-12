@@ -123,3 +123,24 @@ def build_refine_row_prompt(
         "Other fields should change only if the user instruction implies a change.\n"
         '{"values": {"<field_name>": "<value>"}}'
     )
+
+
+def build_complementary_row_prompt(
+    field_defs: list[dict], existing_rows: list[dict],
+    batch_context: str, row_position: int,
+) -> str:
+    field_names = [f.get("element_name", "") for f in field_defs]
+    existing_summary = "\n".join(
+        f"  Row {i+1}: " + ", ".join(f"{k}={v}" for k, v in r.items() if k in field_names)
+        for i, r in enumerate(existing_rows)
+    ) or "  (no existing rows)"
+    return (
+        "You are generating ONE complementary test-data row for a web form.\n"
+        f"Batch context: {batch_context}\n"
+        f"Fields: {', '.join(field_names)}\n"
+        f"Existing rows in this dataset (do not duplicate):\n{existing_summary}\n"
+        f"This is row #{row_position} of the new batch — make it distinct from "
+        "both existing rows and the other rows in this batch.\n"
+        "Return strict JSON only with every field as a key:\n"
+        '{"values": {"<field_name>": "<value>"}}'
+    )

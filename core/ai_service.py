@@ -280,6 +280,44 @@ class AIService:
             or field.get("minlength")
         )
 
+    def generate_complementary_rows(
+        self, field_defs: list[dict], existing_rows: list[dict],
+        batch_context: str, n: int,
+    ) -> list[dict[str, str]]:
+        """Generate N complementary rows in parallel. Returns rows in submission
+        order. Invalid model outputs are silently dropped.
+        """
+        if self.client is None or not self.is_available() or n <= 0:
+            return []
+        from core.ai_prompts import build_complementary_row_prompt
+
+        def _one_row(position: int) -> dict | None:
+            prompt = build_complementary_row_prompt(
+                field_defs, existing_rows, batch_context, position,
+            )
+            raw = self.generate_json(prompt, timeout=15.0)
+            if not raw or not isinstance(raw.get("values"), dict):
+                return None
+            row: dict[str, str] = {}
+            for f in field_defs:
+                name = f.get("element_name", "")
+                if not name:
+                    continue
+                v = raw["values"].get(name, "")
+                row[name] = v if isinstance(v, str) else str(v)
+            return row
+
+        futures = [self._executor.submit(_one_row, i + 1) for i in range(n)]
+        out: list[dict] = []
+        for fut in futures:
+            try:
+                row = fut.result(timeout=20.0)
+            except Exception:
+                row = None
+            if row is not None:
+                out.append(row)
+        return out
+
 
 # --------------------------------------------------------------------- singleton
 _service: AIService | None = None
