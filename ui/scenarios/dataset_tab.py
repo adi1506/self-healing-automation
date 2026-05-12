@@ -88,6 +88,43 @@ def render(sc, on_save):
     if sc.dataset:
         _render_refine_row_panel(sc, on_save)
 
+    _render_append_rows_panel(sc, on_save)
+
+
+def _render_append_rows_panel(sc, on_save):
+    from core.ai_service import get_ai_service
+    svc = get_ai_service()
+    ai_ok = svc.is_available()
+
+    with st.container(border=True):
+        st.markdown("**Add AI rows**")
+        ca, cb, cc = st.columns([1, 4, 1])
+        n_rows = ca.number_input("Count", min_value=1, max_value=8, value=3,
+                                  key=f"add_n_{sc.id}", disabled=not ai_ok)
+        batch_ctx = cb.text_input(
+            "Context for the new rows", key=f"add_ctx_{sc.id}",
+            placeholder="e.g. international customers from EU",
+            disabled=not ai_ok,
+        )
+        if cc.button("Generate", key=f"add_btn_{sc.id}", disabled=not ai_ok):
+            em = ExcelManager(data_dir=DATA_SCANS)
+            elements = em.read_element_map(sc.base_url)
+            with st.spinner(f"Generating {int(n_rows)} rows…"):
+                new_rows = svc.generate_complementary_rows(
+                    elements, list(sc.dataset), batch_ctx, int(n_rows),
+                )
+            if not new_rows:
+                st.warning("No rows generated.")
+            else:
+                merged = list(sc.dataset) + [
+                    {**r, "__expected_outcome": "success"} for r in new_rows
+                ]
+                on_save(merged)
+                st.success(f"Added {len(new_rows)} rows.")
+                st.rerun()
+        if not ai_ok:
+            st.caption("Requires Ollama — configure in Settings.")
+
 
 def _render_refine_row_panel(sc, on_save):
     from core.ai_service import get_ai_service
