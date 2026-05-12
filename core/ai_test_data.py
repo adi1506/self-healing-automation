@@ -1,89 +1,79 @@
+"""Backwards-compatible adapter — delegates LLM calls to AIService.
+
+The DOM-constraint validation logic stays here because it's not AI logic —
+the AIService produces values; AITestData decides whether the value is
+acceptable for the field.
+"""
 from __future__ import annotations
 
-import json
-import os
 import re
+import time
 
-try:
-    import ollama
-except ImportError:
-    ollama = None
+from core.ai_service import get_ai_service
 
 
 class AITestData:
-    """Per-cell LLM enrichment for the test case generator.
-
-    Calls Ollama (Mistral by default) one field at a time with `format=json`,
-    validates the returned value against the field's DOM constraints, retries
-    once on failure, and returns None if it can't produce a valid value.
-    """
-
     def __init__(self, host: str = "", model: str = ""):
-        self.host = host or os.environ.get("OLLAMA_HOST", "")
-        self.model = model or os.environ.get("OLLAMA_MODEL", "mistral")
-        if ollama is not None:
-            self.client = ollama.Client(host=self.host) if self.host else ollama.Client()
-        else:
-            self.client = None
-        self._available = None
+        # host/model args ignored — AIService owns config now.
+        self._svc = get_ai_service()
+        self.host = self._svc.host
+        self.model = self._svc.model
+
+    # ---------- client passthrough so patch.object(ai.client, "generate") works
+    @property
+    def client(self):
+        return self._svc.client
+
+    @client.setter
+    def client(self, value):
+        self._svc.client = value
+
+    # ---------- availability shim (tests set _available directly)
+    @property
+    def _available(self):
+        return self._svc._available
+
+    @_available.setter
+    def _available(self, value):
+        self._svc._available = value
+        if value is not None:
+            self._svc._available_at = time.monotonic()
 
     def is_available(self) -> bool:
-        if self._available is not None:
-            return self._available
-        if self.client is None:
-            self._available = False
-            return False
-        try:
-            self.client.list()
-            self._available = True
-        except Exception:
-            self._available = False
-        return self._available
+        return self._svc.is_available()
 
     def generate_value(
-        self,
-        field: dict,
-        page_context: dict,
-        per_field_rule: str = "",
-        ai_context: str = "",
+        self, field: dict, page_context: dict,
+        per_field_rule: str = "", ai_context: str = "",
     ) -> str | None:
-        if not self.is_available():
-            return None
+        from core.ai_prompts import build_field_value_prompt
 
-        prompt = self._build_prompt(field, page_context, per_field_rule, ai_context)
-        value, violation = self._call_and_validate(prompt, field)
+        value = self._svc.generate_field_value(field, page_context, per_field_rule, ai_context)
+        # Path A: model produced a value — validate and (on violation) retry once
         if value is not None:
-            return value
-        # Retry once with feedback
+            violation = self._validate_against_constraints(value, field)
+            if not violation:
+                return value
+            feedback = violation
+        else:
+            # Path B: model failed to produce a parseable string — retry once
+            feedback = "invalid JSON"
+
+        base_prompt = build_field_value_prompt(field, page_context, per_field_rule, ai_context)
         retry_prompt = (
-            prompt
-            + f"\n\nYour previous answer violated: {violation}. Try again. "
+            base_prompt
+            + f"\n\nYour previous answer violated: {feedback}. Try again. "
               f"Return strict JSON only."
         )
-        value, _ = self._call_and_validate(retry_prompt, field)
-        return value
-
-    def _call_and_validate(self, prompt: str, field: dict) -> tuple[str | None, str]:
-        try:
-            response = self.client.generate(
-                model=self.model,
-                prompt=prompt,
-                format="json",
-                options={"temperature": 0.0},
-            )
-        except Exception:
-            return None, "ollama call failed"
-        try:
-            payload = json.loads(response.get("response", ""))
-        except (ValueError, TypeError):
-            return None, "invalid JSON"
-        value = payload.get("value")
-        if not isinstance(value, str):
-            return None, "value not a string"
-        violation = self._validate_against_constraints(value, field)
-        if violation:
-            return None, violation
-        return value, ""
+        raw = self._svc.generate_json(retry_prompt, timeout=15.0)
+        if not raw:
+            return None
+        retry_value = raw.get("value")
+        if not isinstance(retry_value, str):
+            return None
+        if self._validate_against_constraints(retry_value, field):
+            return None
+        return retry_value
 
     def _validate_against_constraints(self, value: str, field: dict) -> str:
         pattern = field.get("pattern") or ""
@@ -114,36 +104,3 @@ class AITestData:
                     except (TypeError, ValueError):
                         pass
         return ""
-
-    def _build_prompt(
-        self, field: dict, page_context: dict, per_field_rule: str, ai_context: str
-    ) -> str:
-        constraints = self._summarize_constraints(field)
-        ctx_line = ". ".join(
-            v for v in (page_context.get("title", ""),
-                        page_context.get("h1", ""),
-                        page_context.get("first_paragraph", "")) if v
-        ) or "none"
-        return (
-            "You are generating one value for a single form field.\n"
-            f"Page context: {ctx_line}\n"
-            f"Field label: {field.get('locator_label') or field.get('element_name', '')}\n"
-            f"Field name: {field.get('locator_name', '')}\n"
-            f"Field type: {field.get('element_type', '')}\n"
-            f"Helper text: {field.get('helper_text') or 'none'}\n"
-            f"DOM constraints: {constraints or 'none'}\n"
-            f"Per-field rule: {per_field_rule or 'none'}\n"
-            f"Test case scenario: {ai_context or 'default valid value'}\n"
-            "Return strict JSON only: {\"value\": \"<generated value>\"}"
-        )
-
-    def _summarize_constraints(self, field: dict) -> str:
-        parts = []
-        if field.get("pattern"): parts.append(f"pattern={field['pattern']}")
-        if field.get("maxlength"): parts.append(f"maxlength={field['maxlength']}")
-        if field.get("minlength"): parts.append(f"minlength={field['minlength']}")
-        if field.get("min") not in ("", None): parts.append(f"min={field['min']}")
-        if field.get("max") not in ("", None): parts.append(f"max={field['max']}")
-        if field.get("required"): parts.append("required")
-        if field.get("autocomplete"): parts.append(f"autocomplete={field['autocomplete']}")
-        return ", ".join(parts)

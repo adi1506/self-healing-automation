@@ -2,6 +2,13 @@ import os
 from unittest.mock import MagicMock, patch
 import pytest
 from core.ai_test_data import AITestData
+from core.ai_service import reset_ai_service
+
+@pytest.fixture(autouse=True)
+def _reset_ai_singleton():
+    reset_ai_service()
+    yield
+    reset_ai_service()
 
 
 @pytest.fixture

@@ -165,6 +165,22 @@ class AIService:
             resolved_steps.append(new_step)
         return {"steps": resolved_steps, "reasoning": raw.get("reasoning", "")}
 
+    def generate_field_value(
+        self, field: dict, page_context: dict,
+        per_field_rule: str = "", ai_context: str = "",
+    ) -> str | None:
+        """Generate one value for a single form field via the LLM. Constraint
+        validation is performed by the AITestData adapter caller, not here.
+        Returns the raw value string or None on any failure.
+        """
+        from core.ai_prompts import build_field_value_prompt
+        prompt = build_field_value_prompt(field, page_context, per_field_rule, ai_context)
+        raw = self.generate_json(prompt, timeout=15.0)
+        if not raw:
+            return None
+        val = raw.get("value")
+        return val if isinstance(val, str) else None
+
 
 # --------------------------------------------------------------------- singleton
 _service: AIService | None = None
