@@ -177,3 +177,21 @@ def build_summarize_run_prompt(run_record: dict) -> str:
         + heal_summary
         + "\nReturn strict JSON: {\"summary\": \"<one paragraph>\"}"
     )
+
+
+def build_suggest_scenarios_prompt(page: dict) -> str:
+    elements = page.get("elements", [])
+    listing = "\n".join(
+        f"  - {e.get('element_name', '')} ({e.get('element_type', '')})"
+        for e in elements
+    ) or "  (no elements)"
+    title = page.get("title") or page.get("url") or "(untitled page)"
+    return (
+        "Propose 6 distinct test scenarios for the page below. Mix happy-path "
+        "and edge-case personas. Each scenario gets a short name, an ai_context "
+        "(plain-English persona/scenario sentence), and a one-line rationale.\n"
+        f"Page: {title}\n"
+        f"Fields:\n{listing}\n"
+        'Return strict JSON: {"scenarios": [{"name": "...", "ai_context": "...", '
+        '"rationale": "..."}, ...]}'
+    )

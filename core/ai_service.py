@@ -329,6 +329,29 @@ class AIService:
             return ""
         return raw["summary"]
 
+    def suggest_scenarios(self, page: dict) -> list[dict]:
+        if self.client is None or not self.is_available():
+            return []
+        from core.ai_prompts import build_suggest_scenarios_prompt
+        prompt = build_suggest_scenarios_prompt(page)
+        cache_key = ("suggest_scenarios", page.get("url", ""), page.get("title", ""))
+        raw = self.generate_json(prompt, timeout=30.0, cache_key=cache_key)
+        if not raw or not isinstance(raw.get("scenarios"), list):
+            return []
+        out = []
+        for s in raw["scenarios"]:
+            if not isinstance(s, dict):
+                continue
+            name = s.get("name")
+            ctx = s.get("ai_context")
+            why = s.get("rationale", "")
+            if not (isinstance(name, str) and name and
+                    isinstance(ctx, str) and ctx):
+                continue
+            out.append({"name": name, "ai_context": ctx,
+                        "rationale": why if isinstance(why, str) else ""})
+        return out
+
 
 # --------------------------------------------------------------------- singleton
 _service: AIService | None = None
