@@ -144,3 +144,36 @@ def build_complementary_row_prompt(
         "Return strict JSON only with every field as a key:\n"
         '{"values": {"<field_name>": "<value>"}}'
     )
+
+
+def build_summarize_run_prompt(run_record: dict) -> str:
+    name = run_record.get("scenario_name") or run_record.get("name") or "(unnamed)"
+    steps = run_record.get("steps", [])
+    step_lines = []
+    for i, s in enumerate(steps, start=1):
+        outcome = s.get("outcome", "?")
+        err = s.get("error", "")
+        action = s.get("action", "")
+        target = s.get("target", "")
+        line = f"  Step {i}: {action} {target} -> {outcome}"
+        if err:
+            line += f" — {err}"
+        step_lines.append(line)
+    heals = run_record.get("healings", [])
+    heal_summary = (
+        f"\nHealings during this run ({len(heals)}):\n"
+        + "\n".join(
+            f"  - {h.get('element_name', '?')}: {h.get('healed_by', '')}"
+            for h in heals
+        )
+        if heals else ""
+    )
+    return (
+        "Summarize this failed test run in one short paragraph (max ~80 words). "
+        "State what failed, the likely root cause, and whether healings affected the outcome.\n"
+        f"Scenario: {name}\n"
+        "Steps:\n"
+        + "\n".join(step_lines)
+        + heal_summary
+        + "\nReturn strict JSON: {\"summary\": \"<one paragraph>\"}"
+    )

@@ -318,6 +318,17 @@ class AIService:
                 out.append(row)
         return out
 
+    def summarize_run(self, run_record: dict) -> str:
+        if self.client is None or not self.is_available():
+            return ""
+        from core.ai_prompts import build_summarize_run_prompt
+        prompt = build_summarize_run_prompt(run_record)
+        cache_key = ("summarize", run_record.get("id", ""))
+        raw = self.generate_json(prompt, timeout=30.0, cache_key=cache_key)
+        if not raw or not isinstance(raw.get("summary"), str):
+            return ""
+        return raw["summary"]
+
 
 # --------------------------------------------------------------------- singleton
 _service: AIService | None = None
