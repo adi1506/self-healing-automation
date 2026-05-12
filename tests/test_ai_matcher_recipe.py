@@ -2,6 +2,14 @@ import json
 from unittest.mock import MagicMock, patch
 import pytest
 from core.ai_matcher import AIMatcher
+from core.ai_service import reset_ai_service
+
+
+@pytest.fixture(autouse=True)
+def _reset_ai_singleton():
+    reset_ai_service()
+    yield
+    reset_ai_service()
 
 
 def _elements():

@@ -136,6 +136,35 @@ class AIService:
         except (ValueError, TypeError):
             return None
 
+    # ----------------------------------------------------------- high level
+    def match_element(self, old_element: dict, candidates: list[dict]) -> dict | None:
+        from core.ai_prompts import build_match_prompt
+        prompt = build_match_prompt(old_element, candidates)
+        return self.generate_json(prompt, timeout=15.0)
+
+    def suggest_recipe(self, page_url: str, elements: list[dict],
+                       goal: str) -> dict | None:
+        from core.ai_prompts import build_recipe_prompt
+        prompt = build_recipe_prompt(page_url, elements, goal)
+        raw = self.generate_json(prompt, timeout=45.0)
+        if not isinstance(raw, dict) or "steps" not in raw:
+            return None
+        resolved_steps = []
+        for step in raw["steps"]:
+            action = step.get("action")
+            if action in ("wait_for_url", "wait_for_selector"):
+                resolved_steps.append(step)
+                continue
+            idx = step.get("element_index")
+            if not isinstance(idx, int) or idx < 0 or idx >= len(elements):
+                continue
+            target_name = elements[idx].get("element_name", "")
+            new_step = {"action": action, "target": target_name}
+            if "value" in step:
+                new_step["value"] = step["value"]
+            resolved_steps.append(new_step)
+        return {"steps": resolved_steps, "reasoning": raw.get("reasoning", "")}
+
 
 # --------------------------------------------------------------------- singleton
 _service: AIService | None = None
