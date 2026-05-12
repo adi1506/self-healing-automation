@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from difflib import SequenceMatcher
 from core.scanner import Scanner
 from core.excel_manager import ExcelManager
@@ -5,9 +7,9 @@ from core.ai_matcher import AIMatcher
 
 
 class Healer:
-    def __init__(self, ai_api_key: str = ""):
+    def __init__(self, ai_host: str = "", ai_model: str = ""):
         self.scanner = Scanner()
-        self.ai_matcher = AIMatcher(api_key=ai_api_key)
+        self.ai_matcher = AIMatcher(host=ai_host, model=ai_model)
 
     def heal(self, url: str, excel_manager: ExcelManager) -> dict:
         """
@@ -71,7 +73,7 @@ class Healer:
                         unmatched = [current_elements[c_idx]]
                         ai_result = self.ai_matcher.match_element(stored_elements[s_idx], unmatched)
                         if ai_result and ai_result.get("match_index") == 0 and ai_result.get("confidence", 0) >= 0.7:
-                            results[s_idx] = {"status": "CHANGED", "current_index": c_idx, "healed_by": "Level 3 (Gemini confirmed)"}
+                            results[s_idx] = {"status": "CHANGED", "current_index": c_idx, "healed_by": "Level 3 (Ollama/Mistral confirmed)"}
                             matched_stored.add(s_idx)
                             matched_current.add(c_idx)
                             assigned_s.add(s_idx)
@@ -87,7 +89,7 @@ class Healer:
                 ai_result = self.ai_matcher.match_element(stored_elements[s_idx], unmatched_current)
                 if ai_result and ai_result.get("match_index", -1) >= 0 and ai_result.get("confidence", 0) >= 0.7:
                     c_idx = unmatched_c[ai_result["match_index"]]
-                    results[s_idx] = {"status": "CHANGED", "current_index": c_idx, "healed_by": f"Level 3 (Gemini, {ai_result['confidence']:.0%})"}
+                    results[s_idx] = {"status": "CHANGED", "current_index": c_idx, "healed_by": f"Level 3 (Ollama/Mistral, {ai_result['confidence']:.0%})"}
                     matched_stored.add(s_idx)
                     matched_current.add(c_idx)
                     unmatched_s.remove(s_idx)
