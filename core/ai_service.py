@@ -236,6 +236,50 @@ class AIService:
         val = raw.get("value")
         return val if isinstance(val, str) else None
 
+    def refine_row(
+        self, field_defs: list[dict], current_row: dict[str, str],
+        refine_prompt: str,
+    ) -> dict[str, str] | None:
+        """Return a new row that respects the user instruction while leaving
+        DOM-constrained fields untouched.
+        """
+        if self.client is None or not self.is_available():
+            return None
+        from core.ai_prompts import build_refine_row_prompt
+        locked = [
+            f.get("element_name", "") for f in field_defs
+            if self._is_locked_field(f)
+        ]
+        prompt = build_refine_row_prompt(field_defs, current_row, refine_prompt, locked)
+        raw = self.generate_json(prompt, timeout=30.0)
+        if not raw or not isinstance(raw.get("values"), dict):
+            return None
+        out: dict[str, str] = {}
+        for f in field_defs:
+            name = f.get("element_name", "")
+            if not name:
+                continue
+            if name in locked:
+                out[name] = current_row.get(name, "")
+            else:
+                model_val = raw["values"].get(name)
+                out[name] = model_val if isinstance(model_val, str) else current_row.get(name, "")
+        return out
+
+    @staticmethod
+    def _is_locked_field(field: dict) -> bool:
+        """A field is locked from AI refinement if it has a DOM constraint."""
+        etype = (field.get("element_type") or "").lower()
+        if etype in ("select", "radio", "checkbox"):
+            return True
+        return bool(
+            field.get("pattern")
+            or field.get("min") not in ("", None)
+            or field.get("max") not in ("", None)
+            or field.get("maxlength")
+            or field.get("minlength")
+        )
+
 
 # --------------------------------------------------------------------- singleton
 _service: AIService | None = None

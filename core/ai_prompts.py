@@ -93,3 +93,33 @@ def build_field_value_prompt(
         f"Test case scenario: {ai_context or 'default valid value'}\n"
         "Return strict JSON only: {\"value\": \"<generated value>\"}"
     )
+
+
+def build_refine_row_prompt(
+    field_defs: list[dict], current_row: dict[str, str],
+    refine_prompt: str, locked: list[str],
+) -> str:
+    field_lines = []
+    for f in field_defs:
+        name = f.get("element_name", "")
+        if name in locked:
+            field_lines.append(
+                f"  - {name} (LOCKED, must not change): current='{current_row.get(name, '')}', "
+                f"type={f.get('element_type', '')}"
+            )
+        else:
+            field_lines.append(
+                f"  - {name}: current='{current_row.get(name, '')}', "
+                f"type={f.get('element_type', '')}"
+            )
+    listing = "\n".join(field_lines)
+    return (
+        "You are adjusting a single test-data row for a web form.\n"
+        f"User instruction: {refine_prompt}\n"
+        "Fields and current values:\n"
+        f"{listing}\n"
+        "Return strict JSON only. Output every field name as a key with its NEW value. "
+        "Fields marked LOCKED MUST keep their current value exactly. "
+        "Other fields should change only if the user instruction implies a change.\n"
+        '{"values": {"<field_name>": "<value>"}}'
+    )
