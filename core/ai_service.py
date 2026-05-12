@@ -88,6 +88,54 @@ class AIService:
         self._available_at = time.monotonic()
         return self._available
 
+    # -------------------------------------------------------------- primitive
+    def generate_json(self, prompt: str, *, timeout: float = 30.0,
+                      cache_key: tuple | None = None) -> dict | None:
+        """Generate a JSON response from the model.
+
+        - Sets format=json and temperature=0.0.
+        - Strips <think>...</think> and ```json fences before parsing.
+        - Returns None on unavailable / timeout / invalid JSON.
+        - timeout and cache_key are no-ops in Phase 1; wired in Phase 4.
+        """
+        if self.client is None or not self.is_available():
+            return None
+        start = time.monotonic()
+        try:
+            response = self.client.generate(
+                model=self.model,
+                prompt=prompt,
+                format="json",
+                options={"temperature": 0.0},
+            )
+        except Exception as e:
+            self.last_error = f"generate failed: {e}"
+            return None
+        finally:
+            self.last_latency_ms = (time.monotonic() - start) * 1000.0
+
+        raw = response.get("response", "") if isinstance(response, dict) else ""
+        return self._parse_json_response(raw)
+
+    @staticmethod
+    def _parse_json_response(raw: str) -> dict | None:
+        import json
+        import re
+        text = raw.strip()
+        # Strip <think>...</think> blocks (Qwen3 etc.)
+        text = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL)
+        # Strip ```json ... ``` code fences
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text
+            text = text.rsplit("```", 1)[0]
+        text = text.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except (ValueError, TypeError):
+            return None
+
 
 # --------------------------------------------------------------------- singleton
 _service: AIService | None = None

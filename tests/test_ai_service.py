@@ -1,4 +1,5 @@
 import os
+import time
 from unittest.mock import patch, MagicMock
 import pytest
 from core.ai_service import AIService, get_ai_service, reset_ai_service
@@ -55,3 +56,50 @@ def test_get_ai_service_is_singleton(tmp_path):
     a = get_ai_service(settings_path=str(tmp_path / "s.yaml"))
     b = get_ai_service(settings_path=str(tmp_path / "s.yaml"))
     assert a is b
+
+
+def test_generate_json_parses_response(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc._available = True
+    svc._available_at = time.monotonic()  # bypass freshness check
+    with patch.object(svc.client, "generate") as mock_gen:
+        mock_gen.return_value = {"response": '{"value": "alice@gmail.com"}'}
+        result = svc.generate_json("prompt")
+        assert result == {"value": "alice@gmail.com"}
+
+
+def test_generate_json_strips_think_tags(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc._available = True
+    svc._available_at = time.monotonic()
+    with patch.object(svc.client, "generate") as mock_gen:
+        mock_gen.return_value = {
+            "response": '<think>let me consider</think>\n{"value": "x"}'
+        }
+        result = svc.generate_json("prompt")
+        assert result == {"value": "x"}
+
+
+def test_generate_json_strips_code_fences(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc._available = True
+    svc._available_at = time.monotonic()
+    with patch.object(svc.client, "generate") as mock_gen:
+        mock_gen.return_value = {"response": '```json\n{"value": "y"}\n```'}
+        result = svc.generate_json("prompt")
+        assert result == {"value": "y"}
+
+
+def test_generate_json_returns_none_on_unavailable(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc.client = None
+    assert svc.generate_json("prompt") is None
+
+
+def test_generate_json_returns_none_on_invalid_json(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc._available = True
+    svc._available_at = time.monotonic()
+    with patch.object(svc.client, "generate") as mock_gen:
+        mock_gen.return_value = {"response": "not json at all"}
+        assert svc.generate_json("prompt") is None
