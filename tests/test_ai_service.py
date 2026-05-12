@@ -122,3 +122,52 @@ def test_generate_json_times_out(tmp_path):
         result = svc.generate_json("prompt", timeout=0.2)
     assert result is None
     assert "timeout" in (svc.last_error or "").lower()
+
+
+def test_cache_hit_skips_second_call(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc._available = True
+    svc._available_at = time.monotonic()
+    with patch.object(svc.client, "generate") as mock_gen:
+        mock_gen.return_value = {"response": '{"value": "x"}'}
+        a = svc.generate_json("same prompt", cache_key=("match", "k1"))
+        b = svc.generate_json("same prompt", cache_key=("match", "k1"))
+    assert a == b == {"value": "x"}
+    assert mock_gen.call_count == 1
+
+
+def test_cache_invalidated_on_reload(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc._available = True
+    svc._available_at = time.monotonic()
+    with patch.object(svc.client, "generate") as mock_gen:
+        mock_gen.return_value = {"response": '{"value": "a"}'}
+        first = svc.generate_json("p", cache_key=("k",))
+    assert first == {"value": "a"}
+
+    # Reload should clear the cache. After clearing, a fresh call hits the model.
+    # We exercise the cache-cleared invariant by checking _cache is empty.
+    svc.reload()
+    assert svc._cache == {}
+
+    # And the cache write-back still works after reload — call once with a fresh
+    # patched client and verify it caches.
+    svc._available = True
+    svc._available_at = time.monotonic()
+    with patch.object(svc.client, "generate") as mock_gen:
+        mock_gen.return_value = {"response": '{"value": "b"}'}
+        a = svc.generate_json("p", cache_key=("k",))
+        b = svc.generate_json("p", cache_key=("k",))
+    assert a == b == {"value": "b"}
+    assert mock_gen.call_count == 1
+
+
+def test_cache_skipped_when_key_is_none(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc._available = True
+    svc._available_at = time.monotonic()
+    with patch.object(svc.client, "generate") as mock_gen:
+        mock_gen.return_value = {"response": '{"value": "x"}'}
+        svc.generate_json("same", cache_key=None)
+        svc.generate_json("same", cache_key=None)
+    assert mock_gen.call_count == 2

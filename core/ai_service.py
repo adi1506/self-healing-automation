@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -36,6 +37,7 @@ class AIService:
         self.last_error: str | None = None
         self.last_latency_ms: float | None = None
         self._executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="ai-svc")
+        self._cache: dict[str, dict] = {}
 
     # ---------------------------------------------------------------- config
     def _load_config(self) -> None:
@@ -73,6 +75,7 @@ class AIService:
         self.client = ollama.Client(host=self.host) if ollama is not None else None
         self._available = None
         self._available_at = 0.0
+        self._cache.clear()
 
     # ---------------------------------------------------------- availability
     def is_available(self) -> bool:
@@ -103,6 +106,14 @@ class AIService:
         """
         if self.client is None or not self.is_available():
             return None
+        from core.ai_prompts import PROMPT_VERSION
+        composite_key: str | None = None
+        if cache_key is not None:
+            payload = repr((cache_key, self.model, PROMPT_VERSION))
+            composite_key = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            cached = self._cache.get(composite_key)
+            if cached is not None:
+                return cached
         start = time.monotonic()
 
         def _call():
@@ -133,7 +144,14 @@ class AIService:
 
         self.last_latency_ms = (time.monotonic() - start) * 1000.0
         raw = response.get("response", "") if isinstance(response, dict) else ""
-        return self._parse_json_response(raw)
+        parsed = self._parse_json_response(raw)
+        if parsed is not None and composite_key is not None:
+            # Bound the cache at 512 entries (drop oldest entry on overflow).
+            if len(self._cache) >= 512:
+                oldest = next(iter(self._cache))
+                self._cache.pop(oldest, None)
+            self._cache[composite_key] = parsed
+        return parsed
 
     @staticmethod
     def _parse_json_response(raw: str) -> dict | None:
