@@ -34,24 +34,26 @@ The app has five pages, all browser-driven (no filesystem editing required):
 Existing recipes, flows, and per-scan Test Data grids are auto-migrated into
 Scenarios on first launch (idempotent — old files remain untouched).
 
-## Ollama (Optional)
+## AI Model
 
-Level 3 healing uses a local Ollama server running the Mistral model.
+The app uses a local Ollama server. The default and recommended model is **Phi-4 14B**:
 
 ```bash
 # Install Ollama from https://ollama.com, then:
-ollama pull mistral
+ollama pull phi4:14b
 ollama serve
 ```
 
-Optional environment overrides:
+Open the **Settings** page in the app to pick from any installed model. Selection is saved to `data/settings.yaml` and takes effect immediately — no restart.
 
-```bash
-set OLLAMA_HOST=http://localhost:11434
-set OLLAMA_MODEL=mistral
-```
+Alternative models that work well on a CPU-only box:
 
-The tool works fully without Ollama — AI matching is only used as a last-resort fallback.
+- `granite4:8b` — fastest, JSON-native.
+- `qwen3:14b` — strong multilingual coverage.
+- `gemma4:12b` — agent-tuned.
+- `mistral:7b` — legacy, smallest footprint.
+
+The tool works fully without Ollama — AI matching is a last-resort heal fallback, and test-data generation falls back to heuristic layers.
 
 ## AI-Generated Test Cases
 
