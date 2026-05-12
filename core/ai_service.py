@@ -176,7 +176,19 @@ class AIService:
     def match_element(self, old_element: dict, candidates: list[dict]) -> dict | None:
         from core.ai_prompts import build_match_prompt
         prompt = build_match_prompt(old_element, candidates)
-        return self.generate_json(prompt, timeout=15.0)
+        cache_key = (
+            "match",
+            old_element.get("element_name", ""),
+            old_element.get("element_type", ""),
+            old_element.get("placeholder", ""),
+            old_element.get("locator_label", ""),
+            tuple(
+                (c.get("element_name", ""), c.get("element_type", ""),
+                 c.get("placeholder", ""), c.get("locator_label", ""))
+                for c in candidates
+            ),
+        )
+        return self.generate_json(prompt, timeout=15.0, cache_key=cache_key)
 
     def suggest_recipe(self, page_url: str, elements: list[dict],
                        goal: str) -> dict | None:
@@ -211,7 +223,14 @@ class AIService:
         """
         from core.ai_prompts import build_field_value_prompt
         prompt = build_field_value_prompt(field, page_context, per_field_rule, ai_context)
-        raw = self.generate_json(prompt, timeout=15.0)
+        cache_key = (
+            "field_value",
+            field.get("element_name", ""),
+            page_context.get("title", ""),
+            per_field_rule,
+            ai_context,
+        )
+        raw = self.generate_json(prompt, timeout=15.0, cache_key=cache_key)
         if not raw:
             return None
         val = raw.get("value")
