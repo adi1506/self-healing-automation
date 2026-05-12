@@ -73,7 +73,13 @@ class Healer:
                         unmatched = [current_elements[c_idx]]
                         ai_result = self.ai_matcher.match_element(stored_elements[s_idx], unmatched)
                         if ai_result and ai_result.get("match_index") == 0 and ai_result.get("confidence", 0) >= 0.7:
-                            results[s_idx] = {"status": "CHANGED", "current_index": c_idx, "healed_by": "Level 3 (Ollama/Mistral confirmed)"}
+                            results[s_idx] = {
+                                "status": "CHANGED",
+                                "current_index": c_idx,
+                                "healed_by": "Level 3 (Ollama confirmed)",
+                                "ai_rationale": ai_result.get("reasoning", ""),
+                                "ai_confidence": ai_result.get("confidence", 0.0),
+                            }
                             matched_stored.add(s_idx)
                             matched_current.add(c_idx)
                             assigned_s.add(s_idx)
@@ -89,7 +95,13 @@ class Healer:
                 ai_result = self.ai_matcher.match_element(stored_elements[s_idx], unmatched_current)
                 if ai_result and ai_result.get("match_index", -1) >= 0 and ai_result.get("confidence", 0) >= 0.7:
                     c_idx = unmatched_c[ai_result["match_index"]]
-                    results[s_idx] = {"status": "CHANGED", "current_index": c_idx, "healed_by": f"Level 3 (Ollama/Mistral, {ai_result['confidence']:.0%})"}
+                    results[s_idx] = {
+                        "status": "CHANGED",
+                        "current_index": c_idx,
+                        "healed_by": f"Level 3 (Ollama, {ai_result['confidence']:.0%})",
+                        "ai_rationale": ai_result.get("reasoning", ""),
+                        "ai_confidence": ai_result.get("confidence", 0.0),
+                    }
                     matched_stored.add(s_idx)
                     matched_current.add(c_idx)
                     unmatched_s.remove(s_idx)
@@ -128,11 +140,16 @@ class Healer:
             elif match_result["status"] == "CHANGED":
                 current = current_elements[match_result["current_index"]]
                 change_details = self._compute_change_details(stored, current)
-                changes.append({
+                change_record = {
                     "element_name": current.get("element_name", stored["element_name"]),
                     "change_details": change_details,
                     "healed_by": match_result["healed_by"],
-                })
+                }
+                if "ai_rationale" in match_result:
+                    change_record["rationale"] = match_result["ai_rationale"]
+                if "ai_confidence" in match_result:
+                    change_record["confidence"] = match_result["ai_confidence"]
+                changes.append(change_record)
                 healed_elements.append(self._merge_element(stored, current, "CHANGED", change_details, match_result["healed_by"]))
 
             elif match_result["status"] == "UNRESOLVED":

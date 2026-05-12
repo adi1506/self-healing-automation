@@ -28,7 +28,7 @@ def scanner():
 
 @pytest.fixture
 def healer():
-    return Healer(ai_api_key="")
+    return Healer()
 
 
 class TestHealerUnchanged:
@@ -123,3 +123,36 @@ class TestHealReport:
         assert "removed" in report
         assert "changes" in report
         assert "total_elements" in report
+
+
+from unittest.mock import patch as _patch9, MagicMock as _MagicMock9
+from core.healer import Healer as _Healer9
+from core.ai_service import reset_ai_service as _reset9
+
+
+def test_heal_records_ai_rationale_in_changes():
+    _reset9()
+    h = _Healer9()
+    h.scanner = _MagicMock9()
+    h.scanner.scan.return_value = [
+        {"sno": 1, "element_name": "Given Name", "element_type": "input-text",
+         "locator_id": "given_name", "locator_name": "given_name",
+         "locator_css": "", "locator_xpath": "", "locator_data_testid": "",
+         "locator_label": "Given Name", "placeholder": "", "available_options": ""},
+    ]
+    em = _MagicMock9()
+    em.read_element_map.return_value = [
+        {"sno": 1, "element_name": "First Name", "element_type": "input-text",
+         "locator_id": "first_name", "locator_name": "first_name",
+         "locator_css": "", "locator_xpath": "", "locator_data_testid": "",
+         "locator_label": "First Name", "placeholder": "", "available_options": ""},
+    ]
+    with _patch9.object(h.ai_matcher, "is_available", return_value=True), \
+         _patch9.object(h.ai_matcher, "match_element",
+                      return_value={"match_index": 0, "confidence": 0.93,
+                                    "reasoning": "Both fields request a given name."}):
+        report = h.heal("http://example.com", em)
+
+    ai_change = next(c for c in report["changes"] if "Level 3" in c["healed_by"])
+    assert ai_change["rationale"] == "Both fields request a given name."
+    assert ai_change["confidence"] == 0.93
