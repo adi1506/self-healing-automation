@@ -103,3 +103,22 @@ def test_generate_json_returns_none_on_invalid_json(tmp_path):
     with patch.object(svc.client, "generate") as mock_gen:
         mock_gen.return_value = {"response": "not json at all"}
         assert svc.generate_json("prompt") is None
+
+
+import time as _time
+from unittest.mock import patch as _patch11
+
+
+def test_generate_json_times_out(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc._available = True
+    svc._available_at = _time.monotonic()
+
+    def slow_generate(**kwargs):
+        _time.sleep(2.0)
+        return {"response": '{"value": "late"}'}
+
+    with _patch11.object(svc.client, "generate", side_effect=slow_generate):
+        result = svc.generate_json("prompt", timeout=0.2)
+    assert result is None
+    assert "timeout" in (svc.last_error or "").lower()

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 import yaml
 
@@ -34,6 +35,7 @@ class AIService:
         self._available_at = 0.0
         self.last_error: str | None = None
         self.last_latency_ms: float | None = None
+        self._executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="ai-svc")
 
     # ---------------------------------------------------------------- config
     def _load_config(self) -> None:
@@ -94,26 +96,42 @@ class AIService:
         """Generate a JSON response from the model.
 
         - Sets format=json and temperature=0.0.
+        - Enforces per-call timeout via the shared executor.
         - Strips <think>...</think> and ```json fences before parsing.
         - Returns None on unavailable / timeout / invalid JSON.
-        - timeout and cache_key are no-ops in Phase 1; wired in Phase 4.
+        - cache_key is a no-op here; Phase 4 Task 12 wires it.
         """
         if self.client is None or not self.is_available():
             return None
         start = time.monotonic()
-        try:
-            response = self.client.generate(
-                model=self.model,
-                prompt=prompt,
-                format="json",
-                options={"temperature": 0.0},
+
+        def _call():
+            return self.client.generate(
+                model=self.model, prompt=prompt,
+                format="json", options={"temperature": 0.0},
             )
+
+        future = self._executor.submit(_call)
+        try:
+            response = future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            future.cancel()
+            try:
+                # Close the underlying HTTP connection so the worker thread can unblock.
+                inner = getattr(self.client, "_client", None)
+                if inner is not None and hasattr(inner, "close"):
+                    inner.close()
+            except Exception:
+                pass
+            self.last_error = f"timeout after {timeout}s"
+            self.last_latency_ms = (time.monotonic() - start) * 1000.0
+            return None
         except Exception as e:
             self.last_error = f"generate failed: {e}"
-            return None
-        finally:
             self.last_latency_ms = (time.monotonic() - start) * 1000.0
+            return None
 
+        self.last_latency_ms = (time.monotonic() - start) * 1000.0
         raw = response.get("response", "") if isinstance(response, dict) else ""
         return self._parse_json_response(raw)
 
