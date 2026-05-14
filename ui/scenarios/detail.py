@@ -387,13 +387,50 @@ def _persist_run(sc, result: dict) -> None:
     and Dashboard see them. Without this, the in-tab render is the only
     surface that knows the run happened."""
     mode = result.get("mode")
-    if mode not in ("dataset", "steps") or not sc.base_url:
+    if mode not in ("dataset", "steps", "multi-page"):
+        return
+    if mode != "multi-page" and not sc.base_url:
         return
 
     em = ExcelManager(data_dir=DATA_SCANS)
     run_id = result.get("run_id") or uuid.uuid4().hex[:8]
     ts = datetime.now().isoformat(timespec="seconds")
     common = {"run_id": run_id, "timestamp": ts, "test_case_name": sc.name}
+
+    if mode == "multi-page":
+        for po in result.get("page_outcomes", []):
+            url = po["base_url"]
+            page_idx = po["page_index"]
+            row_label = f"Page {page_idx + 1}: {url}"
+            for fr in po.get("field_results", []) or []:
+                em.append_run_result(url, {
+                    **common, "row_label": row_label,
+                    "element_name": fr.get("element_name", ""),
+                    "expected_value": fr.get("expected_value", ""),
+                    "actual_value": fr.get("actual_value", ""),
+                    "status": fr.get("status", ""),
+                    "screenshot": po.get("screenshot", ""),
+                    "page_index": page_idx,
+                })
+            for sr_idx, sr in enumerate(po.get("step_results", []) or []):
+                em.append_run_result(url, {
+                    **common, "row_label": row_label,
+                    "element_name": f"step{sr_idx}",
+                    "expected_value": "",
+                    "actual_value": sr.get("error", "") if sr.get("status") != "PASS" else "",
+                    "status": sr.get("status", ""),
+                    "screenshot": po.get("screenshot", ""),
+                    "page_index": page_idx,
+                })
+            if po["page_status"] == "SKIPPED" and not po.get("field_results") and not po.get("step_results"):
+                em.append_run_result(url, {
+                    **common, "row_label": row_label,
+                    "element_name": "(page skipped)",
+                    "expected_value": "", "actual_value": po.get("transition_error", ""),
+                    "status": "SKIPPED", "screenshot": "",
+                    "page_index": page_idx,
+                })
+        return
 
     if mode == "dataset":
         for row in result.get("row_outcomes", []):
@@ -432,6 +469,29 @@ def _render_run_result(sc, result: dict) -> None:
 
     if mode == "empty":
         st.warning(result.get("message", "Scenario has no runnable steps."))
+        return
+
+    if mode == "multi-page":
+        st.info(result["summary"])
+        for po in result["page_outcomes"]:
+            status = po["page_status"]
+            icon = "✓" if status == "PASS" else ("⏭" if status == "SKIPPED" else "✗")
+            label = f"Page {po['page_index'] + 1}: {po['base_url']} — {status}"
+            with st.expander(f"{icon} {label}", expanded=status != "PASS"):
+                for fr in po.get("field_results", []) or []:
+                    fr_icon = fr["status"]
+                    st.text(
+                        f"[{fr_icon}] {fr['element_name']}: "
+                        f"expected={fr['expected_value']!r} actual={fr['actual_value']!r}"
+                    )
+                for sr_idx, sr in enumerate(po.get("step_results", []) or []):
+                    icon2 = "PASS" if sr["status"] == "PASS" else "FAIL"
+                    err = f" — {sr['error']}" if sr.get("error") else ""
+                    st.text(f"[{icon2}] step{sr_idx}{err}")
+                if po["transition_status"] == "FAIL":
+                    st.error(f"Transition failed: {po['transition_error']}")
+                elif po["transition_status"] == "PASS":
+                    st.caption("→ transition succeeded")
         return
 
     if mode == "dataset":
@@ -477,11 +537,13 @@ def render(scenario_id: str):
         st.caption("No base URL set — pick a scanned page in Settings.")
 
     if st.button(f"▶ Run scenario", type="primary", key=f"run_{sc.id}",
-                 disabled=not sc.base_url):
-        if sc.kind != "single-page" or not sc.base_url:
-            st.error("Multi-page run not wired in this tab yet; use the Run dialog.")
+                 disabled=not (sc.base_url or sc.kind == "multi-page")):
+        if sc.kind == "single-page" and not sc.base_url:
+            st.error("Set a base URL in Settings before running.")
+        elif sc.kind == "multi-page" and not (sc.pages or []):
+            st.error("Add at least one page in Settings before running.")
         else:
-            with st.spinner(f"Running on {sc.base_url}..."):
+            with st.spinner(f"Running {sc.name}..."):
                 result = _run_scenario(sc)
             _persist_run(sc, result)
             _render_run_result(sc, result)
