@@ -23,6 +23,7 @@ class Scenario:
     expected_outcome: str
     recipe_refs: list[str] = field(default_factory=list)
     assertions: list[dict] = field(default_factory=list)
+    pages: list[dict] = field(default_factory=list)
     created_at: str = ""
 
     def to_dict(self) -> dict:
@@ -47,9 +48,30 @@ def _validate(sc: Scenario) -> None:
             raise ScenarioValidationError("single-page scenarios must have at least one step")
         if not sc.base_url:
             raise ScenarioValidationError("single-page scenarios require base_url")
-    else:  # multi-page
-        if not sc.recipe_refs:
-            raise ScenarioValidationError("multi-page scenarios require recipe_refs")
+        return
+
+    # multi-page: accept either the new pages[] shape OR the legacy
+    # recipe_refs shape (read-only — legacy scenarios load but the new
+    # runner only consumes pages[]).
+    if sc.pages:
+        for i, p in enumerate(sc.pages):
+            if not p.get("base_url"):
+                raise ScenarioValidationError(
+                    f"pages[{i}]: base_url is required"
+                )
+            is_last = (i == len(sc.pages) - 1)
+            if not is_last and not p.get("transition"):
+                raise ScenarioValidationError(
+                    f"pages[{i}]: transition is required (only the last page may omit it)"
+                )
+        return
+
+    if sc.recipe_refs:
+        return  # legacy shape — accepted but unrunnable by the new runner
+
+    raise ScenarioValidationError(
+        "multi-page scenarios require pages[] (or legacy recipe_refs)"
+    )
 
 
 def save_scenario(data_dir: str, sc: Scenario) -> None:

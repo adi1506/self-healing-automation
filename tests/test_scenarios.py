@@ -57,3 +57,92 @@ def test_multi_page_scenario_stores_recipe_refs(tmp_path):
     save_scenario(str(tmp_path), sc)
     loaded = load_scenario(str(tmp_path), "journey")
     assert loaded.recipe_refs == ["Login_Recipe", "Dashboard_Check"]
+
+
+def test_multi_page_scenario_with_pages_round_trips(tmp_path):
+    sc = Scenario(
+        id="journey", name="Login + checkout", kind="multi-page",
+        base_url="", steps=[], dataset=[],
+        expected_outcome="success",
+        pages=[
+            {
+                "base_url": "https://e.com/login",
+                "steps": [{"action": "fill", "target": "email", "value": "a@b.co"}],
+                "dataset": [],
+                "transition": {
+                    "target": "submit_button", "wait_for": "url_contains",
+                    "value": "/profile", "timeout_ms": 30000,
+                },
+            },
+            {
+                "base_url": "https://e.com/profile",
+                "steps": [{"action": "click", "target": "logout"}],
+                "dataset": [],
+            },
+        ],
+    )
+    save_scenario(str(tmp_path), sc)
+    loaded = load_scenario(str(tmp_path), "journey")
+    assert loaded.kind == "multi-page"
+    assert len(loaded.pages) == 2
+    assert loaded.pages[0]["transition"]["value"] == "/profile"
+    assert "transition" not in loaded.pages[1]
+
+
+def test_multi_page_rejects_empty_pages(tmp_path):
+    sc = Scenario(
+        id="bad", name="Bad", kind="multi-page",
+        base_url="", steps=[], dataset=[],
+        expected_outcome="success", pages=[],
+    )
+    try:
+        save_scenario(str(tmp_path), sc)
+    except ScenarioValidationError:
+        return
+    raise AssertionError("expected ScenarioValidationError for empty pages")
+
+
+def test_multi_page_rejects_non_last_page_without_transition(tmp_path):
+    sc = Scenario(
+        id="bad2", name="Bad", kind="multi-page",
+        base_url="", steps=[], dataset=[],
+        expected_outcome="success",
+        pages=[
+            {"base_url": "https://e.com/a", "steps": [], "dataset": []},
+            {"base_url": "https://e.com/b", "steps": [], "dataset": []},
+        ],
+    )
+    try:
+        save_scenario(str(tmp_path), sc)
+    except ScenarioValidationError:
+        return
+    raise AssertionError("expected ScenarioValidationError for missing transition")
+
+
+def test_multi_page_rejects_page_without_base_url(tmp_path):
+    sc = Scenario(
+        id="bad3", name="Bad", kind="multi-page",
+        base_url="", steps=[], dataset=[],
+        expected_outcome="success",
+        pages=[{"base_url": "", "steps": [], "dataset": []}],
+    )
+    try:
+        save_scenario(str(tmp_path), sc)
+    except ScenarioValidationError:
+        return
+    raise AssertionError("expected ScenarioValidationError for missing base_url")
+
+
+def test_legacy_multi_page_with_recipe_refs_still_loads(tmp_path):
+    """Back-compat: old multi-page scenarios that only have recipe_refs must
+    still load (validation passes when pages[] is empty AND recipe_refs is
+    populated). They simply won't run via the new runner."""
+    sc = Scenario(
+        id="legacy", name="Legacy journey", kind="multi-page",
+        base_url="", steps=[], dataset=[],
+        expected_outcome="success", recipe_refs=["A", "B"],
+    )
+    save_scenario(str(tmp_path), sc)
+    loaded = load_scenario(str(tmp_path), "legacy")
+    assert loaded.recipe_refs == ["A", "B"]
+    assert loaded.pages == []
