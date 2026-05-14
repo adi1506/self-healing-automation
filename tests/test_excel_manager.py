@@ -416,12 +416,47 @@ def test_test_data_sheet_includes_ai_context_column(tmp_path):
     em.save_element_map(url, elements)
 
     em.save_test_data(url, [
-        {"sno": 1, "test_case_name": "Happy path", "ai_context": "Senior citizen", "Email": "a@b.com"},
+        {"sno": 1, "test_case_name": "Happy path", "ai_context": "Senior citizen",
+         "expected_outcome": "success", "Email": "a@b.com"},
     ])
     rows = em.read_test_data(url)
     assert rows[0]["AI Context"] == "Senior citizen"
     assert rows[0]["Test Case Name"] == "Happy path"
+    assert rows[0]["Expected Outcome"] == "success"
     assert rows[0]["Email"] == "a@b.com"
+
+
+def test_expected_outcome_column_backfilled_on_resave(tmp_path):
+    em = ExcelManager(data_dir=str(tmp_path))
+    url = "http://example.com/form"
+    elements = [
+        {"sno": 1, "element_name": "Email", "element_type": "input-email",
+         "locator_id": "", "locator_name": "email", "locator_css": "", "locator_xpath": "",
+         "locator_data_testid": "", "locator_label": "Email",
+         "placeholder": "", "available_options": "", "current_value": "",
+         "status": "NEW", "change_details": "", "healed_by": "",
+         "pattern": "", "title_attr": "", "minlength": "", "maxlength": "",
+         "min": "", "max": "", "autocomplete": "email", "inputmode": "",
+         "required": False, "helper_text": ""},
+    ]
+    em.save_element_map(url, elements)
+
+    # Simulate an older sheet by removing the Expected Outcome column.
+    from openpyxl import load_workbook
+    path = em.get_excel_path(url)
+    wb = load_workbook(path)
+    ws_td = wb["Test Data"]
+    assert ws_td.cell(row=1, column=4).value == "Expected Outcome"
+    ws_td.delete_cols(4)
+    wb.save(path)
+
+    # Re-saving the element map should backfill the column.
+    em.save_element_map(url, elements)
+    wb = load_workbook(path)
+    headers = [wb["Test Data"].cell(row=1, column=c).value
+               for c in range(1, wb["Test Data"].max_column + 1)]
+    assert "Expected Outcome" in headers
+    assert headers.index("Expected Outcome") == 3  # 0-indexed → column 4
 
 
 def test_page_context_round_trip(tmp_path):
@@ -443,3 +478,40 @@ def test_page_context_returns_empty_when_unset(tmp_path):
     url = "http://example.com/form"
     em.save_element_map(url, [])
     assert em.read_page_context(url) == {"title": "", "h1": "", "first_paragraph": ""}
+
+
+def test_run_results_round_trip_with_page_index(tmp_path):
+    em = ExcelManager(data_dir=str(tmp_path))
+    url = "https://e.com/login"
+    em.append_run_result(url, {
+        "run_id": "abc123", "timestamp": "2026-05-14T10:00:00",
+        "test_case_name": "Multi-page login", "row_label": "Page 1",
+        "element_name": "email", "expected_value": "a@b.co",
+        "actual_value": "a@b.co", "status": "PASS",
+        "screenshot": "", "page_index": 0,
+    })
+    em.append_run_result(url, {
+        "run_id": "abc123", "timestamp": "2026-05-14T10:00:05",
+        "test_case_name": "Multi-page login", "row_label": "Page 2",
+        "element_name": "phone", "expected_value": "1234",
+        "actual_value": "1234", "status": "PASS",
+        "screenshot": "", "page_index": 1,
+    })
+    rows = em.read_run_results(url)
+    assert len(rows) == 2
+    assert rows[0]["page_index"] in (0, "0")
+    assert rows[1]["page_index"] in (1, "1")
+
+
+def test_run_results_back_compat_without_page_index(tmp_path):
+    """Existing callers (single-page runs) don't pass page_index. The
+    column must default to 0 / empty without crashing."""
+    em = ExcelManager(data_dir=str(tmp_path))
+    em.append_run_result("https://e.com/x", {
+        "run_id": "r", "timestamp": "t", "test_case_name": "tc",
+        "row_label": "", "element_name": "n",
+        "expected_value": "e", "actual_value": "a", "status": "PASS",
+        "screenshot": "",
+    })
+    rows = em.read_run_results("https://e.com/x")
+    assert len(rows) == 1

@@ -44,7 +44,8 @@ ELEMENT_MAP_KEYS = [k for k in EXTENDED_ELEMENT_MAP_KEYS[:15]]
 
 RUN_RESULTS_HEADERS = [
     "Run ID", "Timestamp", "Test Case Name", "Element Name",
-    "Expected Value", "Actual Value", "Status", "Screenshot",
+    "Expected Value", "Actual Value", "Status", "Screenshot", "Row Label",
+    "Page Index",
 ]
 
 SCAN_HISTORY_HEADERS = [
@@ -203,7 +204,8 @@ class ExcelManager:
             ws_td.cell(row=1, column=1, value="S.No")
             ws_td.cell(row=1, column=2, value="Test Case Name")
             ws_td.cell(row=1, column=3, value="AI Context")
-            col = 4
+            ws_td.cell(row=1, column=4, value="Expected Outcome")
+            col = 5
             for elem in elements:
                 if elem.get("element_type") not in NON_EDITABLE_TYPES:
                     ws_td.cell(row=1, column=col, value=elem["element_name"])
@@ -214,8 +216,12 @@ class ExcelManager:
             if ws_td.cell(row=1, column=3).value != "AI Context":
                 ws_td.insert_cols(3)
                 ws_td.cell(row=1, column=3, value="AI Context")
+            # Backfill Expected Outcome column for older sheets that don't have it
+            if ws_td.cell(row=1, column=4).value != "Expected Outcome":
+                ws_td.insert_cols(4)
+                ws_td.cell(row=1, column=4, value="Expected Outcome")
             existing_headers = []
-            for col in range(3, ws_td.max_column + 1):
+            for col in range(4, ws_td.max_column + 1):
                 val = ws_td.cell(row=1, column=col).value
                 if val:
                     existing_headers.append(val)
@@ -238,6 +244,11 @@ class ExcelManager:
                 ws_other = wb.create_sheet(sheet_name)
                 for col, header in enumerate(headers, 1):
                     ws_other.cell(row=1, column=col, value=header)
+            else:
+                ws_other = wb[sheet_name]
+                for col, header in enumerate(headers, 1):
+                    if ws_other.cell(row=1, column=col).value != header:
+                        ws_other.cell(row=1, column=col, value=header)
 
         self._save_workbook(wb, path)
         return path
@@ -298,7 +309,11 @@ class ExcelManager:
     def read_test_data(self, url: str) -> list[dict]:
         """Read test data rows from the Test Data sheet."""
         path = self.get_excel_path(url)
+        if not os.path.exists(path):
+            return []
         wb = self._load_workbook(path)
+        if "Test Data" not in wb.sheetnames:
+            return []
         ws = wb["Test Data"]
 
         headers = []
@@ -326,8 +341,21 @@ class ExcelManager:
         """Generic method to append a row to any sheet."""
         path = self.get_excel_path(url)
         if not os.path.exists(path):
-            return
+            # Create a minimal workbook with the target sheet so callers can
+            # append run results / history entries before a full element map
+            # save (e.g. multi-page test runs that record results per page).
+            self._save_url_mapping(url)
+            wb = Workbook()
+            wb.remove(wb.active)
+            ws_new = wb.create_sheet(sheet_name)
+            for col, header in enumerate(headers, 1):
+                ws_new.cell(row=1, column=col, value=header)
+            self._save_workbook(wb, path)
         wb = self._load_workbook(path)
+        if sheet_name not in wb.sheetnames:
+            ws_new = wb.create_sheet(sheet_name)
+            for col, header in enumerate(headers, 1):
+                ws_new.cell(row=1, column=col, value=header)
         ws = wb[sheet_name]
 
         next_row = 2
@@ -347,6 +375,7 @@ class ExcelManager:
 
     def append_run_result(self, url: str, result: dict):
         """Append a run result row to the Run Results sheet."""
+        result = {**result, "page_index": result.get("page_index", 0)}
         self._append_to_sheet(url, "Run Results", result, RUN_RESULTS_HEADERS)
 
     def read_run_results(self, url: str) -> list[dict]:
