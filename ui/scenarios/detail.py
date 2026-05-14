@@ -26,6 +26,45 @@ DATA_SCANS = "data/scans"
 TARGET_REQUIRED_ACTIONS = {"fill", "click", "select", "check"}
 
 
+class _PageView:
+    """Tiny shim that lets Steps/Dataset widgets work against either a
+    Scenario (single-page) or a single page entry inside Scenario.pages
+    (multi-page). It exposes id, name, base_url, steps, dataset — the
+    four attributes the existing widgets read."""
+
+    def __init__(self, sc, page_idx: int | None):
+        self._sc = sc
+        self._idx = page_idx
+
+    @property
+    def id(self) -> str:
+        if self._idx is None:
+            return self._sc.id
+        return f"{self._sc.id}__p{self._idx}"
+
+    @property
+    def name(self) -> str:
+        return self._sc.name
+
+    @property
+    def base_url(self) -> str:
+        if self._idx is None:
+            return self._sc.base_url
+        return self._sc.pages[self._idx].get("base_url", "")
+
+    @property
+    def steps(self) -> list[dict]:
+        if self._idx is None:
+            return self._sc.steps or []
+        return self._sc.pages[self._idx].get("steps") or []
+
+    @property
+    def dataset(self) -> list[dict]:
+        if self._idx is None:
+            return self._sc.dataset or []
+        return self._sc.pages[self._idx].get("dataset") or []
+
+
 def _save_steps(sc, new_steps):
     sc.steps = new_steps
     save_scenario(DATA_SCENARIOS, sc)
@@ -548,8 +587,39 @@ def render(scenario_id: str):
             _persist_run(sc, result)
             _render_run_result(sc, result)
 
+    if sc.kind == "multi-page":
+        page_labels = [
+            f"{i + 1}. {p.get('base_url') or '(unset)'}"
+            for i, p in enumerate(sc.pages or [])
+        ]
+        if not page_labels:
+            st.warning("This multi-page scenario has no pages yet. "
+                       "Use the Settings tab to add some.")
+            page_labels = ["(no pages)"]
+        active_label = st.segmented_control(
+            "Page", options=page_labels,
+            default=page_labels[0],
+            key=f"_active_page_{sc.id}",
+        )
+        active_idx = page_labels.index(active_label) if active_label in page_labels else 0
+        view = _PageView(sc, active_idx if sc.pages else None)
+
+        def _save_view_steps(new_steps):
+            if sc.pages:
+                sc.pages[active_idx]["steps"] = new_steps
+                save_scenario(DATA_SCENARIOS, sc)
+
+        def _save_view_dataset(new_rows):
+            if sc.pages:
+                sc.pages[active_idx]["dataset"] = new_rows
+                save_scenario(DATA_SCENARIOS, sc)
+    else:
+        view = _PageView(sc, None)
+        _save_view_steps = lambda s: _save_steps(sc, s)
+        _save_view_dataset = lambda d: _save_dataset(sc, d)
+
     tab1, tab2, tab3, tab4 = st.tabs(["Steps", "Dataset", "Runs", "Settings"])
-    with tab1: render_steps(sc, lambda s: _save_steps(sc, s))
-    with tab2: render_dataset(sc, lambda d: _save_dataset(sc, d))
+    with tab1: render_steps(view, _save_view_steps)
+    with tab2: render_dataset(view, _save_view_dataset)
     with tab3: render_runs(sc)
     with tab4: render_settings(sc)
