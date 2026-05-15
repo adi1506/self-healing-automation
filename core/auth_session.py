@@ -1,8 +1,12 @@
 from __future__ import annotations
 import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 import yaml
 from cryptography.fernet import Fernet
+
+from core.applications import Application
 
 DEFAULT_SETTINGS_PATH = "data/settings.yaml"
 
@@ -40,3 +44,54 @@ def encrypt_storage_state(payload: dict, *, settings_path: str = DEFAULT_SETTING
 def decrypt_storage_state(blob: bytes, *, settings_path: str = DEFAULT_SETTINGS_PATH) -> dict:
     key = resolve_fernet_key(settings_path)
     return json.loads(Fernet(key).decrypt(blob).decode("utf-8"))
+
+
+def _state_path(data_dir: str, app_id: str) -> str:
+    return os.path.join(data_dir, f"{app_id}.enc")
+
+
+def save_storage_state(
+    data_dir: str, app_id: str, payload: dict, *, settings_path: str = DEFAULT_SETTINGS_PATH
+) -> str:
+    os.makedirs(data_dir, exist_ok=True)
+    blob = encrypt_storage_state(payload, settings_path=settings_path)
+    path = _state_path(data_dir, app_id)
+    with open(path, "wb") as f:
+        f.write(blob)
+    return path
+
+
+def load_storage_state(
+    data_dir: str, app_id: str, *, settings_path: str = DEFAULT_SETTINGS_PATH
+) -> dict | None:
+    path = _state_path(data_dir, app_id)
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        blob = f.read()
+    return decrypt_storage_state(blob, settings_path=settings_path)
+
+
+def delete_storage_state(data_dir: str, app_id: str) -> None:
+    path = _state_path(data_dir, app_id)
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def is_storage_state_valid(app: Application) -> bool:
+    """Best-effort expiry check using the stored expiry timestamp.
+
+    Returns False if expiry is missing, malformed, or in the past.
+    A True result is only an upper bound — the server may have invalidated
+    the session early. Replay handles that case by detecting 401/redirect
+    to login and forcing a refresh.
+    """
+    if not app.storage_state_path or not app.storage_state_expires_at:
+        return False
+    try:
+        expires = datetime.fromisoformat(app.storage_state_expires_at)
+    except ValueError:
+        return False
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return expires > datetime.now(timezone.utc)
