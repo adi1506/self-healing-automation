@@ -86,11 +86,12 @@ if open_id == "__new__":
     scanned_urls = em.list_scanned_urls()
 
     kind = st.radio(
-        "Kind", options=["single-page", "multi-page"], horizontal=True,
+        "Kind", options=["single-page", "multi-page", "recorded"], horizontal=True,
         key="_new_kind",
         help="single-page: one scanned URL, dataset rows iterate. "
              "multi-page: a sequence of scanned URLs walked in one browser "
-             "session with explicit transitions between them.",
+             "session with explicit transitions between them. "
+             "recorded: browser-based recording of a real user journey.",
     )
     name = st.text_input("Name", placeholder="Login valid")
 
@@ -153,7 +154,7 @@ if open_id == "__new__":
             st.session_state.pop("scenario_suggest_attempted", None)
             st.rerun()
 
-    else:  # multi-page
+    elif kind == "multi-page":
         st.caption(
             "Add scanned pages in the order the user journey visits them. "
             "Transitions between pages are configured per page in the "
@@ -207,6 +208,42 @@ if open_id == "__new__":
             st.session_state["_open_scenario"] = sid
             st.session_state.pop("_new_mp_pages", None)
             st.rerun()
+
+    else:  # recorded
+        from core.applications import list_applications
+        apps = list_applications("data/applications")
+        if not apps:
+            st.warning("Create an application on the Recordings page first.")
+        else:
+            app_id = st.selectbox(
+                "Application",
+                [a.id for a in apps],
+                format_func=lambda i: next(a.name for a in apps if a.id == i),
+                key="rec_scn_app",
+            )
+            start_url = st.text_input(
+                "Recording start URL",
+                value=next(a.base_url_pattern for a in apps if a.id == app_id),
+                key="rec_scn_url",
+            )
+            if st.button("Create", type="primary", disabled=not name):
+                sid = _unique_slug(_slugify(name))
+                sc = Scenario(
+                    id=sid,
+                    name=name,
+                    kind="recorded",
+                    base_url="",
+                    steps=[],
+                    dataset=[],
+                    expected_outcome="success",
+                    application_id=app_id,
+                    recordings=[{"id": "placeholder", "start_url": start_url}],  # validation requires non-empty
+                    ai_test_cases=[],
+                    created_at=datetime.now().isoformat(timespec="seconds"),
+                )
+                save_scenario(DATA_SCENARIOS, sc)
+                st.session_state["_open_scenario"] = sid
+                st.rerun()
 
     if st.button("Cancel"):
         st.session_state.pop("_open_scenario", None)

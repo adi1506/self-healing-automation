@@ -562,6 +562,82 @@ def _render_run_result(sc, result: dict) -> None:
         st.info(f"Outcome match: {result['outcome_match']}")
 
 
+def _render_recorded_scenario(sc) -> None:
+    """UI for a recorded scenario: shows existing recordings + a Start button
+    that launches the recorder CLI as a subprocess, polling for its output."""
+    import json, subprocess
+    from pathlib import Path
+    from core.applications import load_application
+    from core.auth_session import load_storage_state, is_storage_state_valid
+    from core.recording import load_recording
+
+    app = load_application("data/applications", sc.application_id)
+    if not is_storage_state_valid(app):
+        st.error(
+            "This application's login session is expired or missing. "
+            "Refresh it on the Recordings page first."
+        )
+        return
+
+    work_dir = "data/recorder_work"
+    Path(work_dir).mkdir(parents=True, exist_ok=True)
+    state = load_storage_state("data/storage_states", sc.application_id)
+    state_in_path = os.path.join(work_dir, f"{sc.id}_state_in.json")
+    Path(state_in_path).write_text(json.dumps(state), encoding="utf-8")
+
+    st.subheader("Recordings")
+    real_recs = [r for r in sc.recordings if r.get("id") and r["id"] != "placeholder"]
+    for r in real_recs:
+        st.write(f"• **{r.get('name', r['id'])}** ({len(r.get('steps', []))} steps)")
+    if not real_recs:
+        st.info("No recordings yet. Start one below.")
+
+    rec_out = os.path.join(work_dir, f"{sc.id}_rec.yaml")
+    cand_out = os.path.join(work_dir, f"{sc.id}_cand.json")
+    proc_key = f"rec_proc_{sc.id}"
+
+    if proc_key not in st.session_state:
+        start_url = st.text_input(
+            "Start URL", value=app.base_url_pattern, key=f"surl_{sc.id}",
+        )
+        name = st.text_input(
+            "Recording name", value="Happy path", key=f"rname_{sc.id}",
+        )
+        if st.button("Start recording", key=f"rstart_{sc.id}") and start_url and name:
+            for p in (rec_out, cand_out):
+                if os.path.exists(p):
+                    os.remove(p)
+            proc = subprocess.Popen([
+                sys.executable, "-m", "core.recorder_cli",
+                "--app-id", sc.application_id,
+                "--start-url", start_url,
+                "--output-recording", rec_out,
+                "--output-candidates", cand_out,
+                "--storage-state-path", state_in_path,
+                "--name", name,
+                "--headless", "false",
+            ])
+            st.session_state[proc_key] = proc.pid
+            st.rerun()
+    else:
+        if not os.path.exists(rec_out):
+            st.warning(
+                "Recording in progress. Close the browser window when done, "
+                "then click Refresh."
+            )
+            if st.button("Refresh", key=f"rref_{sc.id}"):
+                st.rerun()
+        else:
+            new_rec = load_recording(rec_out)
+            cleaned = [r for r in sc.recordings if r.get("id") != "placeholder"]
+            cleaned.append(new_rec.to_dict())
+            sc.recordings = cleaned
+            save_scenario(DATA_SCENARIOS, sc)
+            st.session_state.pop(proc_key, None)
+            st.success(f"Recorded {len(new_rec.steps)} steps.")
+            st.rerun()
+
+
 def render(scenario_id: str):
     sc = load_scenario(DATA_SCENARIOS, scenario_id)
 
@@ -574,6 +650,10 @@ def render(scenario_id: str):
         st.caption(f"Target page: {sc.base_url}")
     else:
         st.caption("No base URL set — pick a scanned page in Settings.")
+
+    if sc.kind == "recorded":
+        _render_recorded_scenario(sc)
+        return
 
     if st.button(f"▶ Run scenario", type="primary", key=f"run_{sc.id}",
                  disabled=not (sc.base_url or sc.kind == "multi-page")):
