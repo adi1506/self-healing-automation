@@ -155,7 +155,9 @@ class Recording:
 
 
 def save_recording(path: str, rec: Recording) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(rec.to_dict(), f, sort_keys=False)
 
