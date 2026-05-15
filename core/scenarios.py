@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any
 import yaml
 
-VALID_KINDS = {"single-page", "multi-page"}
+VALID_KINDS = {"single-page", "multi-page", "recorded"}
 VALID_OUTCOMES = {"success", "failure"}
 
 
@@ -25,6 +25,9 @@ class Scenario:
     assertions: list[dict] = field(default_factory=list)
     pages: list[dict] = field(default_factory=list)
     created_at: str = ""
+    application_id: str | None = None
+    recordings: list[dict] = field(default_factory=list)
+    ai_test_cases: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -48,6 +51,13 @@ def _validate(sc: Scenario) -> None:
             raise ScenarioValidationError("single-page scenarios must have at least one step")
         if not sc.base_url:
             raise ScenarioValidationError("single-page scenarios require base_url")
+        return
+
+    if sc.kind == "recorded":
+        if not sc.application_id:
+            raise ScenarioValidationError("recorded scenarios require application_id")
+        if not sc.recordings:
+            raise ScenarioValidationError("recorded scenarios require at least one recording")
         return
 
     # multi-page: accept either the new pages[] shape OR the legacy

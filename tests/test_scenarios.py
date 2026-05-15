@@ -1,5 +1,6 @@
 import os
 import tempfile
+import pytest
 from core.scenarios import (
     Scenario, save_scenario, load_scenario, list_scenarios, delete_scenario,
     ScenarioValidationError,
@@ -146,3 +147,43 @@ def test_legacy_multi_page_with_recipe_refs_still_loads(tmp_path):
     loaded = load_scenario(str(tmp_path), "legacy")
     assert loaded.recipe_refs == ["A", "B"]
     assert loaded.pages == []
+
+
+def test_recorded_scenario_round_trip(tmp_path):
+    sc = Scenario(
+        id="sc-rec-1",
+        name="KYC happy path",
+        kind="recorded",
+        base_url="",
+        steps=[],
+        dataset=[],
+        expected_outcome="success",
+        application_id="app-1",
+        recordings=[{"id": "rec-001", "name": "Happy path"}],
+        ai_test_cases=[],
+    )
+    save_scenario(str(tmp_path), sc)
+    loaded = load_scenario(str(tmp_path), "sc-rec-1")
+    assert loaded.kind == "recorded"
+    assert loaded.application_id == "app-1"
+    assert loaded.recordings == [{"id": "rec-001", "name": "Happy path"}]
+
+
+def test_recorded_scenario_requires_application_id(tmp_path):
+    sc = Scenario(
+        id="sc-rec-2", name="x", kind="recorded", base_url="",
+        steps=[], dataset=[], expected_outcome="success",
+        application_id=None, recordings=[{"id": "r"}],
+    )
+    with pytest.raises(ScenarioValidationError):
+        save_scenario(str(tmp_path), sc)
+
+
+def test_recorded_scenario_requires_at_least_one_recording(tmp_path):
+    sc = Scenario(
+        id="sc-rec-3", name="x", kind="recorded", base_url="",
+        steps=[], dataset=[], expected_outcome="success",
+        application_id="app-1", recordings=[],
+    )
+    with pytest.raises(ScenarioValidationError):
+        save_scenario(str(tmp_path), sc)
