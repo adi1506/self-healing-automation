@@ -1,6 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass, field, asdict
-from typing import Any
+from dataclasses import dataclass, asdict
 
 
 @dataclass
