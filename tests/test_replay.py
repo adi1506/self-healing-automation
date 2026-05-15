@@ -73,7 +73,7 @@ async def test_raises_when_nothing_matches(sample_form_url):
         await browser.close()
 
 
-from core.recording import Step
+from core.recording import Step, Recording
 from core.replay import execute_step
 
 
@@ -121,3 +121,56 @@ async def test_execute_fill_with_override(sample_form_url):
         actual = await page.eval_on_selector(f"[name='{name}']", "el => el.value")
         assert actual == "OVERRIDDEN"
         await browser.close()
+
+
+from core.replay import replay_recording, ReplayOutcome
+
+
+@pytest.mark.asyncio
+async def test_replay_recording_walks_all_steps(sample_form_url):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await (await browser.new_context()).new_page()
+        await page.goto(sample_form_url)
+        name = await page.evaluate(
+            "() => document.querySelector('input').getAttribute('name')"
+        )
+        if not name:
+            pytest.skip("sample form has no named input")
+        await browser.close()
+
+    fp = ElementFingerprint(
+        id="el-x",
+        primary_locator={"strategy": "name", "value": name},
+        fallback_locators=[],
+        attributes={"tag": "input"},
+        page_context={"url": sample_form_url},
+    )
+    recording = Recording(
+        id="rec-test", name="t", kind="scenario", application_id="app-1",
+        created_at="", start_url=sample_form_url,
+        steps=[Step(index=0, action="fill", element=fp, value="hello")],
+    )
+    outcome = await replay_recording(recording, headless=True)
+    assert outcome.completed_steps == 1
+    assert outcome.failed_step_index is None
+    assert outcome.error is None
+
+
+@pytest.mark.asyncio
+async def test_replay_recording_reports_failed_step(sample_form_url):
+    bad_fp = ElementFingerprint(
+        id="el-x",
+        primary_locator={"strategy": "id", "value": "no-such-element"},
+        fallback_locators=[],
+        attributes={"tag": "input"},
+        page_context={"url": sample_form_url},
+    )
+    recording = Recording(
+        id="rec-test", name="t", kind="scenario", application_id="app-1",
+        created_at="", start_url=sample_form_url,
+        steps=[Step(index=0, action="fill", element=bad_fp, value="x")],
+    )
+    outcome = await replay_recording(recording, headless=True)
+    assert outcome.failed_step_index == 0
+    assert outcome.error is not None

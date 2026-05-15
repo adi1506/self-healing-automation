@@ -1,7 +1,9 @@
 from __future__ import annotations
-from playwright.async_api import Page, Locator
+from dataclasses import dataclass
+from typing import Optional
+from playwright.async_api import async_playwright, Page, Locator
 
-from core.recording import ElementFingerprint, Step
+from core.recording import ElementFingerprint, Step, Recording
 
 
 class ElementNotFound(RuntimeError):
@@ -78,3 +80,52 @@ async def execute_step(page: Page, step: Step, override: str | None) -> None:
         await loc.first.press(value or "")
     else:
         raise ValueError(f"unsupported action: {step.action!r}")
+
+
+@dataclass
+class ReplayOutcome:
+    completed_steps: int = 0
+    failed_step_index: Optional[int] = None
+    error: Optional[str] = None
+    final_url: str = ""
+
+
+async def replay_recording(
+    recording: Recording,
+    *,
+    data_overrides: dict[str, str] | None = None,
+    storage_state: dict | None = None,
+    headless: bool = True,
+) -> ReplayOutcome:
+    """Open a context, navigate to start_url, walk every step.
+
+    `data_overrides` maps `ElementFingerprint.id` -> override value. Used by
+    test cases; falls back to each step's recorded value when absent.
+    """
+    overrides = data_overrides or {}
+    outcome = ReplayOutcome()
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless)
+        ctx_kwargs = {}
+        if storage_state:
+            ctx_kwargs["storage_state"] = storage_state
+        context = await browser.new_context(**ctx_kwargs)
+        page = await context.new_page()
+        try:
+            await page.goto(recording.start_url)
+            for step in recording.steps:
+                ovr = None
+                if step.element is not None:
+                    ovr = overrides.get(step.element.id)
+                try:
+                    await execute_step(page, step, override=ovr)
+                    outcome.completed_steps += 1
+                except Exception as e:
+                    outcome.failed_step_index = step.index
+                    outcome.error = f"{type(e).__name__}: {e}"
+                    break
+            outcome.final_url = page.url
+        finally:
+            await context.close()
+            await browser.close()
+    return outcome
