@@ -71,3 +71,53 @@ async def test_raises_when_nothing_matches(sample_form_url):
         with pytest.raises(ElementNotFound):
             await find_element_by_fingerprint(page, fp)
         await browser.close()
+
+
+from core.recording import Step
+from core.replay import execute_step
+
+
+def _fp_for_input_name(name: str, url: str) -> ElementFingerprint:
+    return ElementFingerprint(
+        id="el-x",
+        primary_locator={"strategy": "name", "value": name},
+        fallback_locators=[],
+        attributes={"tag": "input"},
+        page_context={"url": url},
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_step(sample_form_url):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await (await browser.new_context()).new_page()
+        await page.goto(sample_form_url)
+        name = await page.evaluate(
+            "() => document.querySelector('input').getAttribute('name')"
+        )
+        if not name:
+            pytest.skip("sample form has no named input")
+        step = Step(index=0, action="fill", element=_fp_for_input_name(name, sample_form_url), value="ACME-42")
+        await execute_step(page, step, override=None)
+        actual = await page.eval_on_selector(f"[name='{name}']", "el => el.value")
+        assert actual == "ACME-42"
+        await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_with_override(sample_form_url):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await (await browser.new_context()).new_page()
+        await page.goto(sample_form_url)
+        name = await page.evaluate(
+            "() => document.querySelector('input').getAttribute('name')"
+        )
+        if not name:
+            pytest.skip("sample form has no named input")
+        step = Step(index=0, action="fill", element=_fp_for_input_name(name, sample_form_url), value="recorded")
+        await execute_step(page, step, override="OVERRIDDEN")
+        actual = await page.eval_on_selector(f"[name='{name}']", "el => el.value")
+        assert actual == "OVERRIDDEN"
+        await browser.close()
