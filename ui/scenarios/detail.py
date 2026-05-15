@@ -581,9 +581,7 @@ def _render_recorded_scenario(sc) -> None:
 
     work_dir = "data/recorder_work"
     Path(work_dir).mkdir(parents=True, exist_ok=True)
-    state = load_storage_state("data/storage_states", sc.application_id)
     state_in_path = os.path.join(work_dir, f"{sc.id}_state_in.json")
-    Path(state_in_path).write_text(json.dumps(state), encoding="utf-8")
 
     st.subheader("Recordings")
     real_recs = [r for r in sc.recordings if r.get("id") and r["id"] != "placeholder"]
@@ -607,6 +605,8 @@ def _render_recorded_scenario(sc) -> None:
             for p in (rec_out, cand_out):
                 if os.path.exists(p):
                     os.remove(p)
+            state = load_storage_state("data/storage_states", sc.application_id)
+            Path(state_in_path).write_text(json.dumps(state), encoding="utf-8")
             proc = subprocess.Popen([
                 sys.executable, "-m", "core.recorder_cli",
                 "--app-id", sc.application_id,
