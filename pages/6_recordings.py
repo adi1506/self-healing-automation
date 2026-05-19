@@ -20,15 +20,18 @@ from pathlib import Path
 import streamlit as st
 
 from core.applications import (
-    Application, save_application, list_applications, delete_application, load_application,
+    Application, save_application, list_applications, delete_application,
+    delete_application_cascade, load_application,
 )
 from core.auth_session import save_storage_state, is_storage_state_valid
 from core.recording import load_recording, save_recording
+from core.scenarios import list_scenarios_for_app
 from ui.recording.success_signal_picker import render_picker
 
 APP_DIR = "data/applications"
 STATE_DIR = "data/storage_states"
 WORK_DIR = "data/recorder_work"
+DATA_SCENARIOS = "data/scenarios"
 
 st.set_page_config(page_title="Recordings", page_icon="🎬")
 st.title("Applications & Login Recordings")
@@ -47,26 +50,60 @@ def _start_scenario_recording(app_id: str) -> None:
 def _render_app_list_mode() -> None:
     """Default mode for the page: list applications + the New application form.
 
-    Splitting this out lets the new app-detail mode (Task 7) bypass it cleanly
-    when view_app_id is set.
+    Each app row shows: name/url, login state, scenario count, and three
+    actions — Open (drills into app-detail mode in Task 7), Re-record login,
+    Delete (cascade-confirm).
     """
     st.subheader("Applications")
     apps = list_applications(APP_DIR)
     for app in apps:
-        cols = st.columns([4, 1, 1, 2, 2])
+        n_scenarios = len(list_scenarios_for_app(DATA_SCENARIOS, app.id))
+        confirm_key = f"_confirm_del_app_{app.id}"
+        cols = st.columns([4, 1, 1, 1, 2, 1, 1])
         cols[0].write(f"**{app.name}** — `{app.base_url_pattern}`")
         cols[1].write("login ✓" if app.login_recording_id else "login ✗")
         health = "🟢" if is_storage_state_valid(app) else "🔴"
         cols[2].write(f"state {health}")
+        cols[3].caption(
+            f"{n_scenarios} scenario" + ("" if n_scenarios == 1 else "s")
+        )
         rec_label = "Re-record login" if app.login_recording_id else "Record login"
-        if cols[3].button(rec_label, key=f"rec-{app.id}"):
+        if cols[4].button(rec_label, key=f"rec-{app.id}"):
             st.session_state["login_app_id"] = app.id
             st.session_state["login_url"] = app.base_url_pattern
             st.session_state.pop("login_proc_pid", None)
             st.rerun()
-        if cols[4].button("Delete", key=f"del-{app.id}"):
-            delete_application(APP_DIR, app.id)
+        if cols[5].button("Open", key=f"openapp-{app.id}"):
+            st.session_state["view_app_id"] = app.id
             st.rerun()
+        if cols[6].button("Delete", key=f"del-{app.id}"):
+            st.session_state[confirm_key] = True
+            st.rerun()
+
+        if st.session_state.get(confirm_key):
+            tc_count = sum(
+                len(s.ai_test_cases or [])
+                for s in list_scenarios_for_app(DATA_SCENARIOS, app.id)
+            )
+            st.warning(
+                f"Delete **{app.name}** and its **{n_scenarios} scenario"
+                f"{'' if n_scenarios == 1 else 's'}** + **{tc_count} test case"
+                f"{'' if tc_count == 1 else 's'}**? "
+                "Recorded replay screenshots will be left on disk. "
+                "This cannot be undone."
+            )
+            cc1, cc2, _ = st.columns([2, 2, 6])
+            if cc1.button("Yes, delete", type="primary",
+                          key=f"del_yes_{app.id}"):
+                delete_application_cascade(
+                    APP_DIR, DATA_SCENARIOS, STATE_DIR, WORK_DIR, app.id,
+                )
+                st.session_state.pop(confirm_key, None)
+                st.session_state.pop("view_app_id", None)
+                st.rerun()
+            if cc2.button("Cancel", key=f"del_no_{app.id}"):
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
 
     st.divider()
     st.subheader("New application")
