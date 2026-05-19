@@ -145,6 +145,137 @@ def _render_app_list_mode() -> None:
             st.rerun()
 
 
+def _render_app_detail_mode(app_id: str) -> None:
+    """Drill-down view: a single application's scenarios.
+
+    Shows app header (with cascade-delete + back) and the list of recorded
+    scenarios for this app. The "+ New scenario" button reuses the existing
+    deep-link helper that's already routed by /scenarios."""
+    from core.reports import aggregate_runs
+    from core.scenarios import delete_scenario
+
+    try:
+        app = load_application(APP_DIR, app_id)
+    except Exception:
+        st.error(
+            "That application no longer exists. It may have been deleted "
+            "from another tab."
+        )
+        if st.button("← Back to applications"):
+            st.session_state.pop("view_app_id", None)
+            st.rerun()
+        return
+
+    if st.button("← Back to applications", key=f"back_app_{app.id}"):
+        st.session_state.pop("view_app_id", None)
+        st.rerun()
+
+    st.title(app.name)
+    health = "🟢" if is_storage_state_valid(app) else "🔴"
+    st.caption(
+        f"{app.base_url_pattern} · "
+        f"{'login ✓' if app.login_recording_id else 'login ✗'} · state {health}"
+    )
+
+    confirm_key = f"_confirm_del_app_detail_{app.id}"
+    if st.button("🗑 Delete app", key=f"del_app_detail_{app.id}"):
+        st.session_state[confirm_key] = True
+        st.rerun()
+    if st.session_state.get(confirm_key):
+        scs_here = list_scenarios_for_app(DATA_SCENARIOS, app.id)
+        tc_count = sum(len(s.ai_test_cases or []) for s in scs_here)
+        st.warning(
+            f"Delete **{app.name}** and its **{len(scs_here)} scenario"
+            f"{'' if len(scs_here) == 1 else 's'}** + **{tc_count} test case"
+            f"{'' if tc_count == 1 else 's'}**? "
+            "Recorded replay screenshots will be left on disk. "
+            "This cannot be undone."
+        )
+        cc1, cc2, _ = st.columns([2, 2, 6])
+        if cc1.button("Yes, delete", type="primary",
+                      key=f"del_app_detail_yes_{app.id}"):
+            delete_application_cascade(
+                APP_DIR, DATA_SCENARIOS, STATE_DIR, WORK_DIR, app.id,
+            )
+            st.session_state.pop(confirm_key, None)
+            st.session_state.pop("view_app_id", None)
+            st.rerun()
+        if cc2.button("Cancel", key=f"del_app_detail_no_{app.id}"):
+            st.session_state.pop(confirm_key, None)
+            st.rerun()
+
+    st.divider()
+    c1, c2 = st.columns([4, 1])
+    c1.subheader("Scenarios")
+    if c2.button("+ New scenario", key=f"newscn_{app.id}", type="primary"):
+        st.session_state["_open_scenario"] = "__new__"
+        st.session_state["_new_kind"] = "recorded"
+        st.session_state["rec_scn_app"] = app.id
+        st.session_state.pop("view_app_id", None)
+        st.switch_page("pages/3_scenarios.py")
+
+    scs = list_scenarios_for_app(DATA_SCENARIOS, app.id)
+    if not scs:
+        st.info(
+            "No scenarios for this app yet. Click + New scenario to record one."
+        )
+        return
+
+    try:
+        runs = aggregate_runs("data/scans")
+    except Exception:
+        runs = []
+    last_status_by_name: dict[str, tuple[str, str]] = {}
+    for r in runs:
+        name = r.get("test_case_name", "")
+        if name and name not in last_status_by_name:
+            last_status_by_name[name] = (r.get("status", ""), r.get("timestamp", ""))
+
+    for sc in scs:
+        status, when = last_status_by_name.get(sc.name, ("", ""))
+        pill = {"PASS": ":green[● passing]", "FAIL": ":red[● failing]"}.get(
+            status, ":gray[○ never run]",
+        )
+        n_recordings = len([
+            r for r in (sc.recordings or [])
+            if r.get("id") and r["id"] != "placeholder"
+        ])
+        n_test_cases = len(sc.ai_test_cases or [])
+        del_key = f"_confirm_del_scn_in_app_{sc.id}"
+        with st.container(border=True):
+            cc = st.columns([3, 2, 1, 1])
+            cc[0].markdown(
+                f"**{sc.name}**  \n{pill} {('· ' + when) if when else ''}"
+            )
+            cc[1].caption(
+                f"{n_recordings} recording"
+                f"{'' if n_recordings == 1 else 's'} · "
+                f"{n_test_cases} test case"
+                f"{'' if n_test_cases == 1 else 's'}"
+            )
+            if cc[2].button("Open", key=f"openscn_{sc.id}"):
+                st.session_state["_open_scenario"] = sc.id
+                st.session_state.pop("view_app_id", None)
+                st.switch_page("pages/3_scenarios.py")
+            if cc[3].button("🗑", key=f"delscn_in_app_{sc.id}",
+                            help="Delete scenario"):
+                st.session_state[del_key] = True
+                st.rerun()
+            if st.session_state.get(del_key):
+                st.warning(
+                    f"Delete **{sc.name}**? This cannot be undone."
+                )
+                dc1, dc2, _ = st.columns([2, 2, 6])
+                if dc1.button("Yes, delete", type="primary",
+                              key=f"delscn_yes_{sc.id}"):
+                    delete_scenario(DATA_SCENARIOS, sc.id)
+                    st.session_state.pop(del_key, None)
+                    st.rerun()
+                if dc2.button("Cancel", key=f"delscn_no_{sc.id}"):
+                    st.session_state.pop(del_key, None)
+                    st.rerun()
+
+
 # --- Mode: just-recorded -----------------------------------------------
 recorded_id = st.session_state.get("login_recorded_app_id")
 if recorded_id:
@@ -258,5 +389,11 @@ if app_id:
     st.stop()
 
 
-# --- Mode: list (default) ----------------------------------------------
+# --- Mode: app-detail (view_app_id set) -------------------------------
+view_app_id = st.session_state.get("view_app_id")
+if view_app_id:
+    _render_app_detail_mode(view_app_id)
+    st.stop()
+
+# --- Mode: list (default) ---------------------------------------------
 _render_app_list_mode()
