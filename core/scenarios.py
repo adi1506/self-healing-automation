@@ -115,3 +115,14 @@ def delete_scenario(data_dir: str, scenario_id: str) -> None:
     p = _scenario_path(data_dir, scenario_id)
     if os.path.exists(p):
         os.remove(p)
+
+
+def list_scenarios_for_app(data_dir: str, app_id: str) -> list[Scenario]:
+    """Return scenarios whose application_id matches.
+
+    Useful for the app-detail view in /recordings. Filters list_scenarios so
+    callers don't have to know the field name. Returns an empty list for
+    unknown apps or missing directories — same forgiving contract as
+    list_scenarios.
+    """
+    return [s for s in list_scenarios(data_dir) if s.application_id == app_id]

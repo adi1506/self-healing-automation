@@ -187,3 +187,50 @@ def test_recorded_scenario_requires_at_least_one_recording(tmp_path):
     )
     with pytest.raises(ScenarioValidationError):
         save_scenario(str(tmp_path), sc)
+
+
+def test_list_scenarios_for_app_filters_by_application_id(tmp_path):
+    from core.scenarios import list_scenarios_for_app
+
+    sc1 = Scenario(
+        id="rec_a", name="A", kind="recorded",
+        base_url="", steps=[], dataset=[], expected_outcome="success",
+        application_id="app-1",
+        recordings=[{"id": "r1", "name": "n", "steps": [], "start_url": ""}],
+    )
+    sc2 = Scenario(
+        id="rec_b", name="B", kind="recorded",
+        base_url="", steps=[], dataset=[], expected_outcome="success",
+        application_id="app-2",
+        recordings=[{"id": "r1", "name": "n", "steps": [], "start_url": ""}],
+    )
+    sc3 = Scenario(
+        id="sp", name="SP", kind="single-page",
+        base_url="https://e.com",
+        steps=[{"action": "click", "target": "btn"}],
+        dataset=[], expected_outcome="success",
+    )
+    save_scenario(str(tmp_path), sc1)
+    save_scenario(str(tmp_path), sc2)
+    save_scenario(str(tmp_path), sc3)
+
+    out = list_scenarios_for_app(str(tmp_path), "app-1")
+    assert [s.id for s in out] == ["rec_a"]
+
+
+def test_list_scenarios_for_app_returns_empty_when_no_match(tmp_path):
+    from core.scenarios import list_scenarios_for_app
+
+    sc = Scenario(
+        id="rec_a", name="A", kind="recorded",
+        base_url="", steps=[], dataset=[], expected_outcome="success",
+        application_id="app-1",
+        recordings=[{"id": "r1", "name": "n", "steps": [], "start_url": ""}],
+    )
+    save_scenario(str(tmp_path), sc)
+    assert list_scenarios_for_app(str(tmp_path), "app-other") == []
+
+
+def test_list_scenarios_for_app_returns_empty_for_missing_dir():
+    from core.scenarios import list_scenarios_for_app
+    assert list_scenarios_for_app("/nonexistent/path", "app-x") == []
