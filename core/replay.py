@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 from playwright.async_api import async_playwright, Page, Locator
@@ -285,6 +286,8 @@ async def replay_recording(
     element_timeout_ms: int = 5000,
     ai_matcher: object | None = None,
     healing_enabled: bool = True,
+    recording_path: str | None = None,
+    promote_on_pass: bool = True,
 ) -> ReplayOutcome:
     """Open a context, navigate to start_url, walk every step.
 
@@ -393,4 +396,25 @@ async def replay_recording(
 
     if screenshot_dir:
         _prune_replay_runs(screenshot_dir, keep=5)
+
+    outcome.run_id = uuid.uuid4().hex[:12]
+
+    if (
+        promote_on_pass
+        and recording_path is not None
+        and heal_context is not None
+        and outcome.failed_step_index is None  # scenario passed end-to-end
+        and heal_context.cache  # there's at least one heal to promote
+    ):
+        try:
+            summaries = _promote_heals_to_recording(
+                recording_path,
+                promoted=dict(heal_context.cache),
+                run_id=outcome.run_id,
+            )
+            outcome.promoted_heals = summaries
+        except Exception as e:
+            # Don't fail the run if promotion fails; surface in error
+            outcome.error = f"heals not promoted: {e}"
+
     return outcome

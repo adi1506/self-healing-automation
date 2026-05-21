@@ -10,7 +10,7 @@ import os
 import pytest
 
 from core.recording import (
-    ElementFingerprint, Step, Recording, save_recording,
+    ElementFingerprint, Step, Recording, save_recording, load_recording,
 )
 from core.replay import replay_recording
 
@@ -178,3 +178,52 @@ async def test_heal_cache_avoids_rescanning_on_same_element():
     assert outcome.healed_steps == 2
     assert outcome.step_results[0]["healed"]["new_primary_locator"] == \
            outcome.step_results[1]["healed"]["new_primary_locator"]
+
+
+@pytest.mark.asyncio
+async def test_passing_scenario_promotes_heals_to_recording(tmp_path):
+    """Recording targets v1 schema; we replay against v2 (id changes only).
+    Healer should fire, scenario should pass, recording.json should be
+    updated with new primary locator + history."""
+    fp = _fp(
+        "el-firstname",
+        primary_strategy="id",
+        primary_value="fName",  # v1 id; v2 renames to firstName
+        attrs={
+            "tag": "input", "type": "text", "id": "fName",
+            "name": "firstName", "nearest_label_text": "First Name",
+            "placeholder": "Enter first name", "aria_label": "",
+            "role": "", "autocomplete": "given-name",
+            "html5_constraints": {
+                "pattern": "", "required": True, "maxlength": "",
+                "minlength": "", "min": "", "max": "",
+            },
+        },
+    )
+    # Strip name fallback so the heal path fires (v2 still has name="firstName").
+    fp.fallback_locators = []
+    rec = Recording(
+        id="rec-test", name="t", kind="scenario",
+        application_id="app-1", created_at="2026-05-21",
+        start_url=_file_url("v2_id_changes.html"),
+        steps=[
+            Step(index=0, action="fill", value="Alice", element=fp),
+        ],
+    )
+    rec_path = tmp_path / "rec.yaml"
+    save_recording(str(rec_path), rec)
+
+    outcome = await replay_recording(
+        load_recording(str(rec_path)),
+        recording_path=str(rec_path),
+        headless=True,
+        healing_enabled=True,
+    )
+    assert outcome.failed_step_index is None
+    assert outcome.healed_steps == 1
+    assert len(outcome.promoted_heals) == 1
+
+    reloaded = load_recording(str(rec_path))
+    new_id = reloaded.steps[0].element.primary_locator.get("value")
+    assert new_id != "fName"  # locator was rewritten away from the stale v1 id
+    assert len(reloaded.steps[0].element.fingerprint_history) == 1
