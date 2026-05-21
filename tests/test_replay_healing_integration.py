@@ -279,3 +279,68 @@ async def test_failing_scenario_does_not_promote_heals(tmp_path):
     reloaded = load_recording(str(rec_path))
     assert reloaded.steps[0].element.fingerprint_history == []
     assert reloaded.steps[0].element.primary_locator == {"strategy": "id", "value": "fName"}
+
+
+@pytest.mark.asyncio
+async def test_replay_with_force_runner_up_uses_second_best(tmp_path):
+    """Pre-scenario: page has two phone-like fields. Without override the
+    healer picks `phone_number`. With force_runner_up the healer picks
+    the runner-up `mobile`."""
+    from core.recording import save_recording, load_recording
+
+    html = """<!doctype html><html><body><form>
+        <label for="phone_number">Phone</label>
+        <input id="phone_number" name="phone_number" autocomplete="tel">
+        <label for="mobile">Mobile</label>
+        <input id="mobile" name="mobile" autocomplete="tel">
+    </form></body></html>"""
+    page_path = tmp_path / "two_phones.html"
+    page_path.write_text(html, encoding="utf-8")
+    url = "file://" + str(page_path).replace("\\", "/")
+
+    fp = _fp(
+        "el-phone",
+        primary_strategy="id", primary_value="phone",  # doesn't exist on page
+        attrs={
+            "tag": "input", "type": "text", "id": "phone", "name": "phone",
+            "nearest_label_text": "Phone", "autocomplete": "tel",
+            "html5_constraints": {"pattern": "", "required": False,
+                                  "maxlength": "", "minlength": "", "min": "", "max": ""},
+        },
+    )
+    rec = Recording(
+        id="r-tp", name="t", kind="scenario", application_id="a",
+        created_at="2026-05-21", start_url=url,
+        steps=[Step(index=0, action="fill", value="555", element=fp)],
+    )
+    rec_path = tmp_path / "rec.yaml"
+    save_recording(str(rec_path), rec)
+
+    from core.replay import replay_recording
+
+    # Default: top candidate scores in the gray zone with no AI matcher,
+    # so the heal stays unresolved — but diagnostics confirm phone_number
+    # ranks #1 and mobile ranks #2. That ordering is what force_runner_up
+    # indexes into.
+    out_default = await replay_recording(
+        load_recording(str(rec_path)),
+        recording_path=str(rec_path),
+        headless=True, healing_enabled=True,
+        promote_on_pass=False,
+        element_timeout_ms=1000,
+    )
+    diag = out_default.step_results[0].get("heal_diagnostics", "")
+    assert "#1 'Phone'" in diag and "#2 'Mobile'" in diag, diag
+
+    # Re-replay with force_runner_up: the forced path bypasses the
+    # gray-zone gate and picks top_k index 1 (= mobile).
+    out_forced = await replay_recording(
+        load_recording(str(rec_path)),
+        recording_path=str(rec_path),
+        headless=True, healing_enabled=True,
+        promote_on_pass=False,
+        force_runner_up={"el-phone": 1},
+    )
+    assert out_forced.healed_steps == 1, out_forced.error
+    healed_forced = out_forced.step_results[0].get("healed")
+    assert healed_forced["new_primary_locator"]["value"] == "mobile"

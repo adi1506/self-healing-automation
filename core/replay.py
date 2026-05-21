@@ -29,11 +29,15 @@ class HealContext:
 
     `action` is set per-step before invoking find_element_by_fingerprint
     — the healer needs it to enforce action-compatibility.
+
+    `force_runner_up` maps fingerprint id to a top_k_candidates index —
+    used by the runner-up retry path in the run report.
     """
     action: str = ""
     ai_matcher: object | None = None
     cache: dict[str, HealDecision] = field(default_factory=dict)
     last_decision: Optional[HealDecision] = None
+    force_runner_up: dict[str, int] = field(default_factory=dict)
 
 
 def _locator_for(page: Page, locator: dict) -> Locator:
@@ -109,6 +113,7 @@ async def find_element_by_fingerprint(
                     page, fp,
                     action=heal_context.action,
                     ai_matcher=heal_context.ai_matcher,
+                    force_candidate_index=heal_context.force_runner_up.get(fp.id),
                 )
                 heal_context.last_decision = decision
                 if decision.method != "unresolved" and decision.new_primary_locator:
@@ -355,6 +360,7 @@ async def replay_recording(
     healing_enabled: bool = True,
     recording_path: str | None = None,
     promote_on_pass: bool = True,
+    force_runner_up: dict[str, int] | None = None,
 ) -> ReplayOutcome:
     """Open a context, navigate to start_url, walk every step.
 
@@ -374,7 +380,13 @@ async def replay_recording(
         os.makedirs(run_dir, exist_ok=True)
         outcome.run_dir = run_dir
 
-    heal_context = HealContext(ai_matcher=ai_matcher) if healing_enabled else None
+    heal_context = (
+        HealContext(
+            ai_matcher=ai_matcher,
+            force_runner_up=dict(force_runner_up or {}),
+        )
+        if healing_enabled else None
+    )
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
