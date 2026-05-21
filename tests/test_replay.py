@@ -281,3 +281,15 @@ def test_revert_last_heal_restores_previous_locator(tmp_path):
     assert fp.fingerprint_history[0].previous_primary_locator == {
         "strategy": "id", "value": "phone_number",
     }
+
+
+def test_replay_outcome_skipped_steps_defaults_to_empty_list():
+    """New field for tracking field_removed-induced skips, separate from
+    `step_results` (which uses status='skipped_removed' per-row) and from
+    the post-failure cascade."""
+    from core.replay import ReplayOutcome
+    outcome = ReplayOutcome()
+    assert outcome.skipped_steps == []
+    # The two fields must be independent — skipping a step does not set
+    # failed_step_index.
+    assert outcome.failed_step_index is None

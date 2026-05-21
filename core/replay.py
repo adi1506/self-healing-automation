@@ -263,6 +263,12 @@ class ReplayOutcome:
     new_required_fields_detected: list[dict] = field(default_factory=list)
     auto_filled_fields: list[dict] = field(default_factory=list)
     original_failure: Optional[dict] = None
+    # One entry per step that was skipped because the healer classified
+    # the element as field_removed AND the step was safe to skip
+    # (see _is_step_skippable). Each entry: {step_index, action, fingerprint_id,
+    # field_label, diagnostics}. Does NOT include the post-failure cascade
+    # (those still appear in step_results with status="skipped").
+    skipped_steps: list[dict] = field(default_factory=list)
 
 
 def _promote_heals_to_recording(
