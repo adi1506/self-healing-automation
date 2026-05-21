@@ -923,6 +923,31 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
             f"Replay failed at step {outcome.failed_step_index} after "
             f"{outcome.completed_steps} successful step(s){healed_suffix}: {outcome.error}"
         )
+        # If the blocker step failed because its target looks removed,
+        # show a manual-fix CTA.
+        failed_idx = outcome.failed_step_index
+        failed_result = next(
+            (r for r in outcome.step_results if r.get("step_index") == failed_idx),
+            None,
+        )
+        if failed_result and failed_result.get("removal_diagnostics"):
+            with st.container(border=True):
+                st.markdown(
+                    "**The step that failed targets a field that appears to "
+                    "have been removed, and it's not a step we can safely "
+                    "skip (e.g. a click/submit, or a required fill).**"
+                )
+                st.caption(failed_result["removal_diagnostics"])
+                cta_key = f"manual_fix_{sc.id}_{recording.id}_{failed_idx}"
+                if st.button(
+                    "✏ Add a step manually here",
+                    key=cta_key,
+                    type="primary",
+                ):
+                    st.session_state[f"_manual_fix_recording_{sc.id}"] = recording.id
+                    st.session_state[f"_manual_fix_step_idx_{sc.id}"] = failed_idx
+                    st.session_state.pop(f"_replay_outcome_{sc.id}", None)
+                    st.rerun()
         # Identify heals that fired in the steps BEFORE the failure
         upstream_heals = []
         for sr in outcome.step_results:
@@ -1631,4 +1656,15 @@ def render(scenario_id: str):
                         break
                 save_scenario(DATA_SCENARIOS, sc)
 
-            recording_editor.render(sc, rec_id, _on_save_rec)
+            scroll_idx = st.session_state.get(f"_manual_fix_step_idx_{sc.id}")
+            target_rec = st.session_state.get(f"_manual_fix_recording_{sc.id}")
+            recording_editor.render(
+                sc, rec_id, _on_save_rec,
+                scroll_to_step_index=(
+                    scroll_idx if target_rec == rec_id else None
+                ),
+            )
+            if scroll_idx is not None and target_rec == rec_id:
+                # Show once, then clear so the highlight clears on next rerun.
+                st.session_state.pop(f"_manual_fix_recording_{sc.id}", None)
+                st.session_state.pop(f"_manual_fix_step_idx_{sc.id}", None)

@@ -7,11 +7,20 @@ import streamlit as st
 from core.recording import Recording, Step
 
 
-def render(scenario, recording_id: str, on_save) -> None:
+def render(
+    scenario,
+    recording_id: str,
+    on_save,
+    *,
+    scroll_to_step_index: int | None = None,
+) -> None:
     """Render an inline editor for a recording's steps.
 
     `on_save(rec: Recording)` persists changes back to the scenario.
     `recording_id` selects which of the scenario's recordings to edit.
+    `scroll_to_step_index`, if provided, highlights that row and pre-selects
+    'insert above' on it — used by the "Add step manually" CTA from a
+    failed replay.
     """
     rec_dict = next(
         (r for r in scenario.recordings if r.get("id") == recording_id), None,
@@ -39,6 +48,11 @@ def render(scenario, recording_id: str, on_save) -> None:
     # Render each step as a row
     for i, s in enumerate(rec.steps):
         cols = st.columns([0.5, 1.5, 3, 3, 0.5, 0.5, 0.5, 0.6])
+        if scroll_to_step_index is not None and i == scroll_to_step_index:
+            st.markdown(
+                f":blue-background[**👉 Add a step here** — the failed "
+                f"replay couldn't find this step's target.]"
+            )
         cols[0].write(f"**{i}**")
         cols[1].write(f"`{s.action}`")
         cols[2].markdown(_target_label(s) or ":gray[(no target)]")
