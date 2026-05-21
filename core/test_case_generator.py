@@ -72,18 +72,41 @@ class TestCaseGenerator:
         per_field_rule: str,
         ai_context: str,
     ) -> str:
-        """Resolve a single field's value through L1→L4 + fallback."""
+        """Resolve a single field's value through L1→L4 + fallback.
+
+        L1 (hard DOM constraints) always wins. When the user has supplied
+        explicit intent (per-field rule or per-row AI context), L4 runs
+        before L2/L3 so the AI can override deterministic guesses like
+        autocomplete=given-name → "John". Without user intent, the L1→L4
+        order matches the original design.
+        """
         v = self._l1_dom_constraint(field)
         if v is not None:
             return v
+
+        has_user_intent = bool(per_field_rule or ai_context)
+        ai_attempted = False
+
+        if self.ai_client is not None and has_user_intent:
+            ai_attempted = True
+            ai_value = self.ai_client.generate_value(
+                field=field,
+                page_context=page_context,
+                per_field_rule=per_field_rule,
+                ai_context=ai_context,
+            )
+            if ai_value is not None:
+                return ai_value
+
         v = self._l2_autocomplete(field)
         if v is not None:
             return v
         v = self._l3_dictionary(field)
         if v is not None:
             return v
-        # L4: AI enrichment if client present and we have any context to work with
-        if self.ai_client is not None and (per_field_rule or ai_context or self._is_bare_freetext(field)):
+
+        if (self.ai_client is not None and not ai_attempted
+                and self._is_bare_freetext(field)):
             ai_value = self.ai_client.generate_value(
                 field=field,
                 page_context=page_context,
@@ -176,16 +199,34 @@ class TestCaseGenerator:
     # Priority order for Compact mode — most distinctive first
     _COMPACT_PRIORITY = ["pattern", "min", "max", "maxlength", "minlength", "type_email", "type_number", "required"]
 
-    def derive_negatives(self, fields: list[dict], mode: str = "compact") -> list[dict]:
+    def derive_negatives(
+        self,
+        fields: list[dict],
+        mode: str = "compact",
+        valid_values: dict[str, str] | None = None,
+        variants_per_field: int | None = None,
+    ) -> list[dict]:
         """Return negative test descriptors. Each item:
             {field, violation, value}
         Mode 'compact' yields one row per field; 'thorough' yields one per violatable constraint.
+
+        When `variants_per_field` is set, thorough mode caps the number of negatives
+        per field to that value (picking by `_COMPACT_PRIORITY` order so the most
+        distinctive violations come first).
+
+        `valid_values` is the row-0 happy-path values dict; when provided,
+        pattern-violation negatives mutate the actually-displayed happy-path
+        value rather than re-generating a fresh random one (so the negative
+        and the happy path stay aligned across regenerations).
         """
+        valid_values = valid_values or {}
         results = []
         for f in fields:
             if (f.get("element_type") or "").lower() in ("button",):
                 continue
-            negatives = self._negatives_for_field(f)
+            negatives = self._negatives_for_field(
+                f, happy_value=valid_values.get(f.get("element_name", ""))
+            )
             if not negatives:
                 continue
             if mode == "compact":
@@ -193,16 +234,28 @@ class TestCaseGenerator:
                 if chosen:
                     results.append(chosen)
             else:
-                results.extend(negatives)
+                ordered = self._ordered_by_priority(negatives)
+                if variants_per_field is not None and variants_per_field > 0:
+                    ordered = ordered[:variants_per_field]
+                results.extend(ordered)
         return results
 
-    def _negatives_for_field(self, field: dict) -> list[dict]:
+    def _ordered_by_priority(self, negatives: list[dict]) -> list[dict]:
+        by_violation = {n["violation"]: n for n in negatives}
+        ordered: list[dict] = []
+        for v in self._COMPACT_PRIORITY:
+            if v in by_violation:
+                ordered.append(by_violation.pop(v))
+        ordered.extend(by_violation.values())
+        return ordered
+
+    def _negatives_for_field(self, field: dict, happy_value: str | None = None) -> list[dict]:
         name = field.get("element_name", "")
         etype = (field.get("element_type") or "").lower()
         out = []
 
         if field.get("pattern"):
-            base = self.generate_value(field)  # a valid value
+            base = happy_value if happy_value is not None else self.generate_value(field)
             mutated = base.lower() if base != base.lower() else base[:-1] if len(base) > 1 else "x"
             out.append({"field": name, "violation": "pattern", "value": mutated})
 
@@ -246,6 +299,7 @@ class TestCaseGenerator:
         mode: str = "compact",
         per_field_rules: dict[str, str] | None = None,
         ai_contexts_by_row: dict[int, str] | None = None,
+        variants_per_field: int | None = None,
     ) -> list[dict]:
         """Produce a list of test case rows.
 
@@ -271,17 +325,29 @@ class TestCaseGenerator:
         rows = [{
             "test_case_name": "Happy path",
             "ai_context": ai_contexts_by_row.get(0, ""),
+            "expected_outcome": "success",
             "values": values_for_row(0),
         }]
 
-        # Negatives reuse the row-0 valid values for the non-targeted fields
         valid_values = rows[0]["values"]
-        for i, neg in enumerate(self.derive_negatives(editable, mode=mode), start=1):
-            row_values = dict(valid_values)
+        negatives = self.derive_negatives(
+            editable, mode=mode, valid_values=valid_values,
+            variants_per_field=variants_per_field,
+        )
+        for i, neg in enumerate(negatives, start=1):
+            # If the user supplied a row-specific AI context for this negative,
+            # regenerate non-target fields with that context. Otherwise reuse
+            # the happy-path values (cheaper, deterministic).
+            row_ctx = ai_contexts_by_row.get(i, "")
+            if row_ctx and row_ctx != ai_contexts_by_row.get(0, ""):
+                row_values = values_for_row(i)
+            else:
+                row_values = dict(valid_values)
             row_values[neg["field"]] = neg["value"]
             rows.append({
                 "test_case_name": f"{neg['field']}: {self._violation_label(neg['violation'])}",
-                "ai_context": ai_contexts_by_row.get(i, ""),
+                "ai_context": row_ctx,
+                "expected_outcome": "failure",
                 "values": row_values,
             })
         return rows

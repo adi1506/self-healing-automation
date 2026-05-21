@@ -59,7 +59,7 @@ def _render_app_list_mode() -> None:
     for app in apps:
         n_scenarios = len(list_scenarios_for_app(DATA_SCENARIOS, app.id))
         confirm_key = f"_confirm_del_app_{app.id}"
-        cols = st.columns([4, 1, 1, 1, 2, 1, 1])
+        cols = st.columns([3, 1, 1, 1, 3, 2, 2])
         cols[0].write(f"**{app.name}** — `{app.base_url_pattern}`")
         cols[1].write("login ✓" if app.login_recording_id else "login ✗")
         health = "🟢" if is_storage_state_valid(app) else "🔴"
@@ -337,7 +337,18 @@ if app_id:
     proc_done = os.path.exists(rec_path) and os.path.exists(cand_path)
     if not proc_done:
         st.warning("Recording in progress. Close the browser window when done, then click Refresh.")
-        if st.button("Refresh"):
+        cols = st.columns([2, 2, 6])
+        if cols[0].button("Refresh"):
+            st.rerun()
+        if cols[1].button("Cancel recording"):
+            # Doesn't kill the orphaned recorder subprocess — closing the
+            # browser window ends it. We just clear session state + partial
+            # files so the user isn't stranded on this screen.
+            for p in (rec_path, cand_path, state_path):
+                if os.path.exists(p):
+                    os.remove(p)
+            for k in ("login_app_id", "login_url", "login_proc_pid"):
+                st.session_state.pop(k, None)
             st.rerun()
         st.stop()
 

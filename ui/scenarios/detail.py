@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 import streamlit as st
 from playwright.async_api import async_playwright
-from core.scenarios import load_scenario, save_scenario
+from core.scenarios import load_scenario, save_scenario, delete_scenario
 from core.recipes import RecipeExecutor
 from core.scanner import _run_async
 from core.setter import Setter
@@ -583,18 +583,77 @@ def _render_recorded_scenario(sc) -> None:
     Path(work_dir).mkdir(parents=True, exist_ok=True)
     state_in_path = os.path.join(work_dir, f"{sc.id}_state_in.json")
 
+    # ── Scenario-level actions ──────────────────────────────────────────
+    _render_scenario_actions(sc)
+
     st.subheader("Recordings")
     real_recs = [r for r in sc.recordings if r.get("id") and r["id"] != "placeholder"]
-    for r in real_recs:
-        st.write(f"• **{r.get('name', r['id'])}** ({len(r.get('steps', []))} steps)")
     if not real_recs:
         st.info("No recordings yet. Start one below.")
+    else:
+        for r in real_recs:
+            _render_recording_row(sc, r)
+
+    # Transient flows. Test-case authoring (manual / AI / Excel) renders ABOVE
+    # the replay output so the form sits above the recorded Step-by-step list
+    # when a replay is also on screen.
+    addtc_target = st.session_state.get(f"_addtc_target_{sc.id}")
+    if addtc_target:
+        _render_test_case_editor(sc, addtc_target)
+
+    gen_target = st.session_state.get(f"_gen_target_{sc.id}")
+    if gen_target:
+        _render_ai_generator(sc, gen_target)
+
+    xls_target = st.session_state.get(f"_xls_target_{sc.id}")
+    if xls_target:
+        _render_excel_test_cases_uploader(sc, xls_target)
+
+    replay_target = st.session_state.get(f"_replay_target_{sc.id}")
+    if replay_target:
+        overrides = st.session_state.get(f"_replay_overrides_{sc.id}")
+        label = st.session_state.get(f"_replay_label_{sc.id}")
+        _render_replay(sc, replay_target, overrides=overrides, label=label)
 
     rec_out = os.path.join(work_dir, f"{sc.id}_rec.yaml")
     cand_out = os.path.join(work_dir, f"{sc.id}_cand.json")
     proc_key = f"rec_proc_{sc.id}"
+    pending_key = f"_pending_recording_{sc.id}"
 
-    if proc_key not in st.session_state:
+    if pending_key in st.session_state:
+        _render_pending_recording(sc, rec_out, cand_out, pending_key, proc_key)
+        return
+
+    if proc_key in st.session_state:
+        if not os.path.exists(rec_out):
+            st.warning(
+                "Recording in progress. Close the browser window when done, "
+                "then click Refresh."
+            )
+            cols = st.columns([2, 2, 6])
+            if cols[0].button("Refresh", key=f"rref_{sc.id}"):
+                st.rerun()
+            if cols[1].button("Cancel recording", key=f"rcancel_{sc.id}"):
+                # Doesn't kill the orphaned recorder subprocess — the user is
+                # told to close the browser window, which ends it naturally.
+                # We just clear our session state and stale files so the UI
+                # is usable again.
+                for p in (rec_out, cand_out):
+                    if os.path.exists(p):
+                        os.remove(p)
+                st.session_state.pop(proc_key, None)
+                st.rerun()
+        else:
+            # Recording file landed. DO NOT persist yet — stage it under
+            # _pending_recording and let the user explicitly Save or Discard.
+            st.session_state[pending_key] = rec_out
+            st.session_state.pop(proc_key, None)
+            st.rerun()
+    elif not real_recs:
+        # Only offer to start a new recording when this scenario has none yet.
+        # Once a recording exists, additional ones should be a new scenario.
+        st.divider()
+        st.markdown("#### New recording")
         start_url = st.text_input(
             "Start URL", value=app.base_url_pattern, key=f"surl_{sc.id}",
         )
@@ -619,23 +678,683 @@ def _render_recorded_scenario(sc) -> None:
             ])
             st.session_state[proc_key] = proc.pid
             st.rerun()
-    else:
-        if not os.path.exists(rec_out):
-            st.warning(
-                "Recording in progress. Close the browser window when done, "
-                "then click Refresh."
-            )
-            if st.button("Refresh", key=f"rref_{sc.id}"):
-                st.rerun()
-        else:
-            new_rec = load_recording(rec_out)
-            cleaned = [r for r in sc.recordings if r.get("id") != "placeholder"]
-            cleaned.append(new_rec.to_dict())
-            sc.recordings = cleaned
-            save_scenario(DATA_SCENARIOS, sc)
-            st.session_state.pop(proc_key, None)
-            st.success(f"Recorded {len(new_rec.steps)} steps.")
+
+
+def _render_scenario_actions(sc) -> None:
+    """Top-of-page action row: delete scenario (with confirm)."""
+    confirm_key = f"_confirm_del_scn_{sc.id}"
+    if st.session_state.get(confirm_key):
+        st.warning(
+            f"Delete scenario **{sc.name}** and all its recordings? "
+            "This cannot be undone."
+        )
+        c1, c2, _ = st.columns([2, 2, 6])
+        if c1.button("Yes, delete", type="primary", key=f"_confirm_del_yes_{sc.id}"):
+            delete_scenario(DATA_SCENARIOS, sc.id)
+            st.session_state.pop(confirm_key, None)
+            st.session_state.pop("_open_scenario", None)
             st.rerun()
+        if c2.button("Cancel", key=f"_confirm_del_no_{sc.id}"):
+            st.session_state.pop(confirm_key, None)
+            st.rerun()
+        return
+    cols = st.columns([3, 7])
+    if cols[0].button("🗑 Delete scenario", key=f"_del_scn_{sc.id}"):
+        st.session_state[confirm_key] = True
+        st.rerun()
+
+
+def _render_recording_row(sc, rec: dict) -> None:
+    """One recording shown as a row with Replay / Add test case (submenu) /
+    Delete, plus a saved-test-cases picker if any exist."""
+    rec_id = rec["id"]
+    name = rec.get("name", rec_id)
+    n_steps = len(rec.get("steps", []))
+    picker_key = f"_addtc_picker_{sc.id}_{rec_id}"
+    st.markdown(f"**{name}** — {n_steps} steps")
+    cols = st.columns([2, 2, 2, 4])
+    if cols[0].button("▶ Replay recording", key=f"row_replay_{sc.id}_{rec_id}",
+                      type="primary"):
+        st.session_state[f"_replay_target_{sc.id}"] = rec_id
+        st.session_state.pop(f"_replay_overrides_{sc.id}", None)
+        st.session_state.pop(f"_replay_label_{sc.id}", None)
+        st.session_state.pop(f"_replay_outcome_{sc.id}", None)
+        st.rerun()
+    if cols[1].button("➕ Add test case", key=f"row_addtc_{sc.id}_{rec_id}"):
+        st.session_state[picker_key] = not st.session_state.get(picker_key, False)
+        st.rerun()
+    if cols[2].button("🗑 Delete", key=f"row_del_{sc.id}_{rec_id}"):
+        sc.recordings = [r for r in sc.recordings if r.get("id") != rec_id]
+        # Drop test cases that referenced this recording — they're now orphans.
+        sc.ai_test_cases = [
+            tc for tc in (sc.ai_test_cases or [])
+            if tc.get("recording_id") != rec_id
+        ]
+        save_scenario(DATA_SCENARIOS, sc)
+        st.rerun()
+
+    if st.session_state.get(picker_key):
+        with st.container(border=True):
+            st.caption("How do you want to add the test case?")
+            sub = st.columns([2, 2, 2, 2])
+            if sub[0].button("🤖 AI generated", key=f"addtc_ai_{sc.id}_{rec_id}"):
+                st.session_state[f"_gen_target_{sc.id}"] = rec_id
+                st.session_state.pop(picker_key, None)
+                st.rerun()
+            if sub[1].button("📄 Upload Excel", key=f"addtc_xls_{sc.id}_{rec_id}"):
+                st.session_state[f"_xls_target_{sc.id}"] = rec_id
+                st.session_state.pop(picker_key, None)
+                st.rerun()
+            if sub[2].button("🧪 Add manually", key=f"addtc_man_{sc.id}_{rec_id}"):
+                st.session_state[f"_addtc_target_{sc.id}"] = rec_id
+                st.session_state.pop(picker_key, None)
+                st.rerun()
+            if sub[3].button("Cancel", key=f"addtc_cancel_{sc.id}_{rec_id}"):
+                st.session_state.pop(picker_key, None)
+                st.rerun()
+
+    # Per-recording test-case selector: only render if cases exist.
+    rec_cases = [
+        tc for tc in (sc.ai_test_cases or [])
+        if tc.get("recording_id") == rec_id
+    ]
+    if rec_cases:
+        labels = [
+            f"{tc['name']} ({tc.get('expected_outcome', 'success')})"
+            for tc in rec_cases
+        ]
+        pick_key = f"_tc_pick_{sc.id}_{rec_id}"
+        st.selectbox(
+            "Test case", options=labels, key=pick_key,
+            label_visibility="collapsed",
+        )
+        if st.button(
+            "▶ Run with selected test case",
+            key=f"row_runtc_{sc.id}_{rec_id}",
+        ):
+            picked_label = st.session_state.get(pick_key)
+            tc = next((c for c, lbl in zip(rec_cases, labels) if lbl == picked_label), None)
+            if tc is not None:
+                st.session_state[f"_replay_target_{sc.id}"] = rec_id
+                st.session_state[f"_replay_overrides_{sc.id}"] = dict(tc.get("overrides", {}))
+                st.session_state[f"_replay_label_{sc.id}"] = f"{name} · {tc['name']}"
+                st.rerun()
+    st.divider()
+
+
+def _render_pending_recording(sc, rec_out: str, cand_out: str,
+                              pending_key: str, proc_key: str) -> None:
+    """Save / Discard gate after a recording file lands but before it's
+    appended to the scenario. Lets the user reject a bad take."""
+    from core.recording import load_recording
+
+    try:
+        preview = load_recording(rec_out)
+    except Exception as e:
+        st.error(f"Could not load recorded file: {e}")
+        if st.button("Discard", key=f"pend_discard_err_{sc.id}"):
+            for p in (rec_out, cand_out):
+                if os.path.exists(p):
+                    os.remove(p)
+            st.session_state.pop(pending_key, None)
+            st.rerun()
+        return
+
+    st.success(
+        f"Recording finished: **{preview.name}** — {len(preview.steps)} steps, "
+        f"start_url `{preview.start_url}`"
+    )
+    st.caption("Review and choose: save, save & replay, or discard.")
+    cols = st.columns([2, 2, 2, 4])
+    save_clicked = cols[0].button("💾 Save recording", type="primary",
+                                  key=f"pend_save_{sc.id}")
+    save_replay_clicked = cols[1].button("▶ Save & Replay",
+                                         key=f"pend_save_replay_{sc.id}")
+    discard_clicked = cols[2].button("🗑 Discard", key=f"pend_discard_{sc.id}")
+
+    if save_clicked or save_replay_clicked:
+        cleaned = [r for r in sc.recordings if r.get("id") != "placeholder"]
+        cleaned.append(preview.to_dict())
+        sc.recordings = cleaned
+        save_scenario(DATA_SCENARIOS, sc)
+        for p in (rec_out, cand_out):
+            if os.path.exists(p):
+                os.remove(p)
+        st.session_state.pop(pending_key, None)
+        if save_replay_clicked:
+            st.session_state[f"_replay_target_{sc.id}"] = preview.id
+            st.session_state.pop(f"_replay_overrides_{sc.id}", None)
+            st.session_state.pop(f"_replay_label_{sc.id}", None)
+            st.session_state.pop(f"_replay_outcome_{sc.id}", None)
+        st.rerun()
+    if discard_clicked:
+        for p in (rec_out, cand_out):
+            if os.path.exists(p):
+                os.remove(p)
+        st.session_state.pop(pending_key, None)
+        st.rerun()
+
+
+def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = None,
+                   label: str | None = None) -> None:
+    """Replay the named recording against the saved storage state and render
+    a step-by-step report with screenshots.
+
+    The outcome is cached in session_state, keyed by (recording_id, overrides,
+    label), so that subsequent reruns (caused by clicking unrelated buttons)
+    re-render the same result instead of launching another browser session.
+    Use 'Run again' to invalidate the cache and re-execute.
+
+    Headed by default so the user can watch; set SCANNER_HEADLESS=1 to flip
+    (e.g. on the EC2 box where there's no display)."""
+    from core.auth_session import load_storage_state
+    from core.recording import Recording
+    from core.replay import replay_recording
+
+    rec_dict = next(
+        (r for r in sc.recordings if r.get("id") == recording_id), None,
+    )
+    if rec_dict is None:
+        st.error(f"Recording {recording_id!r} not found on this scenario.")
+        st.session_state.pop(f"_replay_target_{sc.id}", None)
+        return
+
+    cache_key = f"_replay_outcome_{sc.id}"
+    sig = (recording_id,
+           tuple(sorted((overrides or {}).items())),
+           label or "")
+    cached = st.session_state.get(cache_key)
+    if cached is not None and cached.get("sig") == sig:
+        recording = cached["recording"]
+        outcome = cached["outcome"]
+    else:
+        recording = Recording.from_dict(rec_dict)
+        state = load_storage_state("data/storage_states", sc.application_id)
+        raw = os.environ.get("SCANNER_HEADLESS", "")
+        headless = raw.strip().lower() in ("1", "true", "yes", "on")
+        title = label or recording.name
+        with st.spinner(f"Replaying {title}…"):
+            outcome = _run_async(
+                replay_recording(
+                    recording,
+                    data_overrides=overrides,
+                    storage_state=state,
+                    headless=headless,
+                    screenshot_dir=os.path.join(
+                        "data/replay_runs", recording.id,
+                    ),
+                ),
+            )
+        st.session_state[cache_key] = {
+            "sig": sig, "recording": recording, "outcome": outcome,
+        }
+
+    healed_n = getattr(outcome, "healed_steps", 0)
+    healed_suffix = f" · {healed_n} healed 🩹" if healed_n else ""
+    if outcome.error:
+        st.error(
+            f"Replay failed at step {outcome.failed_step_index} after "
+            f"{outcome.completed_steps} successful step(s){healed_suffix}: {outcome.error}"
+        )
+    else:
+        st.success(
+            f"Replay completed all {outcome.completed_steps} steps{healed_suffix}. "
+            f"Final URL: {outcome.final_url}"
+        )
+    _render_step_report(outcome, recording)
+    btn_cols = st.columns([2, 2, 6])
+    if btn_cols[0].button("↻ Run again", key=f"rerun_replay_{sc.id}"):
+        st.session_state.pop(cache_key, None)
+        st.rerun()
+    if btn_cols[1].button("Close replay result", key=f"close_replay_{sc.id}"):
+        st.session_state.pop(f"_replay_target_{sc.id}", None)
+        st.session_state.pop(f"_replay_overrides_{sc.id}", None)
+        st.session_state.pop(f"_replay_label_{sc.id}", None)
+        st.session_state.pop(cache_key, None)
+        st.rerun()
+
+
+def _render_step_report(outcome, recording) -> None:
+    """Render per-step pass/fail with inline screenshots.
+
+    A step that ran the healer renders with a 🩹 icon and an expanded
+    `Healed via …` block showing old → new locator, confidence, and the
+    attributes that matched. A failed step where the healer ran but
+    couldn't confidently match shows the healer's candidate diagnostics
+    in the error block."""
+    results = getattr(outcome, "step_results", None) or []
+    if not results:
+        return
+    st.markdown("#### Step-by-step")
+    by_index = {s.index: s for s in recording.steps}
+    for r in results:
+        step = by_index.get(r["step_index"])
+        healed = r.get("healed")
+        status = r["status"]
+        if healed and status == "passed":
+            icon = "🩹"
+        else:
+            icon = {"passed": "✅", "failed": "❌", "skipped": "⏭"}.get(status, "•")
+        label_parts = [f"Step {r['step_index']}", r.get("action", "")]
+        if step is not None and step.element is not None:
+            attrs = step.element.attributes or {}
+            field = (
+                attrs.get("aria_label") or attrs.get("name")
+                or step.element.primary_locator.get("value")
+            )
+            if field:
+                label_parts.append(field)
+        if healed and status == "passed":
+            label_parts.append(f"healed · {healed['confidence']:.0%}")
+        header = f"{icon} " + " · ".join(p for p in label_parts if p)
+        with st.expander(header, expanded=(status == "failed" or bool(healed))):
+            if r.get("value") not in (None, ""):
+                st.caption(f"value: `{r['value']}`")
+            if healed and status == "passed":
+                _render_heal_block(healed)
+            if r.get("error"):
+                st.error(r["error"])
+                if r.get("heal_diagnostics"):
+                    st.caption(f"healer: {r['heal_diagnostics']}")
+            shot = r.get("screenshot_path")
+            if shot and os.path.exists(shot):
+                st.image(shot, use_container_width=True)
+            elif shot:
+                st.caption(f"(screenshot missing: {shot})")
+
+
+def _render_heal_block(healed: dict) -> None:
+    """Inline panel inside a healed step's expander.
+
+    Shows old → new locator, confidence, the method (auto vs AI-confirmed),
+    and which attributes matched. Keep it terse — the user is scanning
+    many steps; deep diff lives behind a second expander."""
+    method_label = {
+        "auto": "automatic (heuristic match)",
+        "ai-confirmed": "AI-confirmed (gray-zone)",
+    }.get(healed.get("method", ""), healed.get("method", ""))
+    old = healed.get("old_primary_locator") or {}
+    new = healed.get("new_primary_locator") or {}
+    st.markdown(
+        f"**Healed via {method_label}** — confidence "
+        f"`{healed.get('confidence', 0):.0%}`"
+        + (f" (runner-up `{healed.get('runner_up_score', 0):.0%}`)"
+           if healed.get('runner_up_score') else "")
+    )
+    st.markdown(
+        f"locator: `{old.get('strategy', '?')}={old.get('value', '?')}` "
+        f"→ `{new.get('strategy', '?')}={new.get('value', '?')}`"
+    )
+    matched_by = healed.get("matched_by") or []
+    if matched_by:
+        st.caption("matched on: " + ", ".join(matched_by))
+    with st.expander("Candidate attributes (audit)"):
+        st.json(healed.get("candidate_attrs") or {})
+
+
+def _render_test_case_editor(sc, recording_id: str) -> None:
+    """Minimal editor for creating a named test-case variant of a recording.
+
+    A test case = (name, expected_outcome, per-fingerprint value overrides).
+    Saved into sc.ai_test_cases. Execution wiring is intentionally deferred —
+    this surface exists so the user can author variants the moment a recording
+    lands, without bouncing through another screen."""
+    rec_dict = next(
+        (r for r in sc.recordings if r.get("id") == recording_id), None,
+    )
+    if rec_dict is None:
+        st.error(f"Recording {recording_id!r} not found on this scenario.")
+        st.session_state.pop(f"_addtc_target_{sc.id}", None)
+        return
+
+    st.subheader(f"New test case for *{rec_dict.get('name', recording_id)}*")
+    # Only fill/select steps are data-bearing — clicks/navigations have no
+    # value to override, so exclude them from the editor to keep the form
+    # focused on what the user can actually vary.
+    overridable = [
+        s for s in rec_dict.get("steps", [])
+        if s.get("action") in ("fill", "select") and s.get("element")
+    ]
+    if not overridable:
+        st.info("This recording has no fill/select steps to vary.")
+        if st.button("Back", key=f"back_addtc_{sc.id}"):
+            st.session_state.pop(f"_addtc_target_{sc.id}", None)
+            st.rerun()
+        return
+
+    with st.form(f"addtc_form_{sc.id}"):
+        tc_name = st.text_input("Test case name", value="", key=f"tc_name_{sc.id}")
+        tc_expected = st.selectbox(
+            "Expected outcome", ["success", "failure"], key=f"tc_exp_{sc.id}",
+        )
+        st.caption("Override the recorded value per field (leave unchanged to reuse the recording's value):")
+        overrides: dict[str, str] = {}
+        for step in overridable:
+            elem = step["element"]
+            label = (
+                elem.get("attributes", {}).get("aria_label")
+                or elem.get("attributes", {}).get("name")
+                or elem.get("primary_locator", {}).get("value")
+                or elem["id"]
+            )
+            new_val = st.text_input(
+                f"{step['action']}: {label}",
+                value=step.get("value") or "",
+                key=f"tc_ovr_{sc.id}_{step['index']}",
+            )
+            overrides[elem["id"]] = new_val
+        col_save, col_cancel = st.columns([1, 1])
+        save_clicked = col_save.form_submit_button("Save test case", type="primary")
+        cancel_clicked = col_cancel.form_submit_button("Cancel")
+
+    if cancel_clicked:
+        st.session_state.pop(f"_addtc_target_{sc.id}", None)
+        st.rerun()
+    if save_clicked:
+        if not tc_name.strip():
+            st.error("Give the test case a name before saving.")
+            return
+        sc.ai_test_cases = list(sc.ai_test_cases) + [{
+            "id": uuid.uuid4().hex[:8],
+            "name": tc_name.strip(),
+            "recording_id": recording_id,
+            "expected_outcome": tc_expected,
+            "overrides": overrides,
+        }]
+        save_scenario(DATA_SCENARIOS, sc)
+        st.success(f"Saved test case *{tc_name.strip()}*.")
+        st.session_state.pop(f"_addtc_target_{sc.id}", None)
+        st.rerun()
+
+
+def _overridable_steps(rec_dict: dict) -> list[dict]:
+    return [
+        s for s in rec_dict.get("steps", []) or []
+        if s.get("action") in ("fill", "select") and s.get("element")
+    ]
+
+
+def _friendly_label(elem: dict) -> str:
+    attrs = elem.get("attributes") or {}
+    return (
+        attrs.get("aria_label")
+        or attrs.get("placeholder")
+        or attrs.get("name")
+        or attrs.get("id")
+        or elem.get("primary_locator", {}).get("value")
+        or elem["id"]
+    )
+
+
+def _render_excel_test_cases_uploader(sc, recording_id: str) -> None:
+    """Bulk-create test cases from an Excel/CSV file.
+
+    Expected columns: `name`, `expected_outcome`, plus one column per fill/select
+    step whose header matches the step's friendly label (aria-label / placeholder
+    / name / id). Missing columns simply leave that field at the recording's
+    value. Unknown columns are reported but otherwise ignored."""
+    import pandas as pd
+
+    rec_dict = next(
+        (r for r in sc.recordings if r.get("id") == recording_id), None,
+    )
+    if rec_dict is None:
+        st.error(f"Recording {recording_id!r} not found on this scenario.")
+        st.session_state.pop(f"_xls_target_{sc.id}", None)
+        return
+
+    st.subheader(f"Upload Excel test cases for *{rec_dict.get('name', recording_id)}*")
+    overridable = _overridable_steps(rec_dict)
+    if not overridable:
+        st.info("This recording has no fill/select steps to vary.")
+        if st.button("Back", key=f"xls_back_empty_{sc.id}"):
+            st.session_state.pop(f"_xls_target_{sc.id}", None)
+            st.rerun()
+        return
+
+    # Build label → fingerprint id map. If two steps share a label, the last one
+    # wins, which is fine for the common case where the user only varies one of
+    # the duplicates. The caption surfaces the column names they should use.
+    label_to_fp: dict[str, str] = {}
+    for step in overridable:
+        label_to_fp[_friendly_label(step["element"])] = step["element"]["id"]
+
+    expected_cols = ["name", "expected_outcome"] + list(label_to_fp.keys())
+    st.caption("Expected columns:")
+    st.code(", ".join(expected_cols), language="text")
+
+    uploaded = st.file_uploader(
+        "Excel or CSV", type=["xlsx", "xls", "csv"],
+        key=f"xls_upload_{sc.id}_{recording_id}",
+    )
+    if uploaded is None:
+        if st.button("Cancel", key=f"xls_cancel_pre_{sc.id}"):
+            st.session_state.pop(f"_xls_target_{sc.id}", None)
+            st.rerun()
+        return
+
+    try:
+        if uploaded.name.lower().endswith(".csv"):
+            df = pd.read_csv(uploaded)
+        else:
+            df = pd.read_excel(uploaded)
+    except Exception as e:
+        st.error(f"Could not read file: {e}")
+        if st.button("Cancel", key=f"xls_cancel_err_{sc.id}"):
+            st.session_state.pop(f"_xls_target_{sc.id}", None)
+            st.rerun()
+        return
+
+    cols = list(df.columns)
+    unknown = [c for c in cols if c not in expected_cols]
+    if unknown:
+        st.warning(f"Ignoring unrecognized columns: {unknown}")
+    if "name" not in cols:
+        st.error("Required column `name` is missing.")
+        return
+
+    st.markdown(f"**Preview** — {len(df)} row(s)")
+    st.dataframe(df, use_container_width=True)
+
+    c1, c2, _ = st.columns([2, 2, 6])
+    if c1.button(f"Save {len(df)} test case(s)", type="primary",
+                 key=f"xls_save_{sc.id}", disabled=len(df) == 0):
+        new_cases = []
+        for idx, row in df.iterrows():
+            tc_name = str(row.get("name", "") or "").strip() or f"Row {idx + 1}"
+            exp = str(row.get("expected_outcome", "success") or "success").strip().lower()
+            if exp not in ("success", "failure"):
+                exp = "success"
+            overrides: dict[str, str] = {}
+            for label, fp_id in label_to_fp.items():
+                if label not in cols:
+                    continue
+                val = row.get(label, "")
+                if val is None or (isinstance(val, float) and pd.isna(val)):
+                    val = ""
+                overrides[fp_id] = str(val)
+            new_cases.append({
+                "id": uuid.uuid4().hex[:8],
+                "name": tc_name,
+                "recording_id": recording_id,
+                "expected_outcome": exp,
+                "overrides": overrides,
+                "source": "excel",
+            })
+        sc.ai_test_cases = list(sc.ai_test_cases) + new_cases
+        save_scenario(DATA_SCENARIOS, sc)
+        st.success(f"Saved {len(new_cases)} test case(s).")
+        st.session_state.pop(f"_xls_target_{sc.id}", None)
+        st.rerun()
+    if c2.button("Cancel", key=f"xls_cancel_{sc.id}"):
+        st.session_state.pop(f"_xls_target_{sc.id}", None)
+        st.rerun()
+
+
+def _render_ai_generator(sc, recording_id: str) -> None:
+    """Card-review UX for AI-generated test case variants.
+
+    Two phases in one function:
+      1. controls (count + focus) → on Generate, call AIService and stash
+         results in session state keyed by recording_id.
+      2. review cards → checkboxes per case, with an inline expander for
+         per-case edits. Save selected pushes accepted cases into
+         sc.ai_test_cases; Regenerate clears and reruns; Cancel exits.
+    """
+    from core.ai_service import get_ai_service
+    from core.recording import Recording
+
+    rec_dict = next(
+        (r for r in sc.recordings if r.get("id") == recording_id), None,
+    )
+    if rec_dict is None:
+        st.error(f"Recording {recording_id!r} not found on this scenario.")
+        st.session_state.pop(f"_gen_target_{sc.id}", None)
+        return
+
+    st.subheader(f"🤖 Generate test cases for *{rec_dict.get('name', recording_id)}*")
+    svc = get_ai_service()
+    if not svc.is_available():
+        st.error(
+            "AI service unavailable. Check Ollama is running and the model "
+            f"({svc.model}) is pulled."
+        )
+        if svc.last_error:
+            st.caption(f"Last error: {svc.last_error}")
+        if st.button("Back", key=f"gen_back_unavail_{sc.id}"):
+            st.session_state.pop(f"_gen_target_{sc.id}", None)
+            st.rerun()
+        return
+
+    suggestions_key = f"_gen_suggestions_{sc.id}"
+    selection_key = f"_gen_selection_{sc.id}"
+    suggestions = st.session_state.get(suggestions_key)
+
+    # ── Phase 1: controls ────────────────────────────────────────────────
+    if suggestions is None:
+        c1, c2 = st.columns([1, 3])
+        count = c1.number_input(
+            "Count", min_value=1, max_value=20, value=5, key=f"gen_count_{sc.id}",
+        )
+        focus = c2.multiselect(
+            "Focus areas",
+            ["Negative", "Boundary", "Invalid format", "Happy path variants"],
+            default=["Negative", "Boundary"],
+            key=f"gen_focus_{sc.id}",
+        )
+        col_go, col_cancel = st.columns([1, 1])
+        if col_go.button("Generate", type="primary", key=f"gen_go_{sc.id}"):
+            recording = Recording.from_dict(rec_dict)
+            with st.spinner(f"Asking {svc.model} for {count} variants…"):
+                result = svc.suggest_test_cases_for_recording(
+                    recording, int(count), focus,
+                )
+            if result is None:
+                st.error("AI returned an unparseable response.")
+                if svc.last_error:
+                    st.caption(f"Last error: {svc.last_error}")
+                return
+            if not result:
+                st.warning(
+                    "No variants were generated. The recording may have no "
+                    "fill/select steps the AI could vary."
+                )
+                return
+            st.session_state[suggestions_key] = result
+            st.session_state[selection_key] = {i: True for i in range(len(result))}
+            st.rerun()
+        if col_cancel.button("Cancel", key=f"gen_cancel_p1_{sc.id}"):
+            st.session_state.pop(f"_gen_target_{sc.id}", None)
+            st.rerun()
+        return
+
+    # ── Phase 2: review cards ────────────────────────────────────────────
+    st.caption(
+        f"AI suggested {len(suggestions)} variants. Toggle the ones to save, "
+        "expand to inspect or edit."
+    )
+    selection = st.session_state.setdefault(
+        selection_key, {i: True for i in range(len(suggestions))},
+    )
+    # Build a label map fingerprint_id → human label, sourced from the
+    # recording, so the card view never shows raw "el-7" identifiers.
+    label_by_fp: dict[str, str] = {}
+    for step in rec_dict.get("steps", []) or []:
+        elem = step.get("element") or {}
+        if not elem:
+            continue
+        attrs = elem.get("attributes") or {}
+        label_by_fp[elem["id"]] = (
+            attrs.get("aria_label")
+            or attrs.get("placeholder")
+            or attrs.get("name")
+            or attrs.get("id")
+            or elem["id"]
+        )
+
+    for i, case in enumerate(suggestions):
+        outcome_icon = "✗" if case["expected_outcome"] == "failure" else "✓"
+        header_cols = st.columns([0.5, 9])
+        selection[i] = header_cols[0].checkbox(
+            "keep", value=selection.get(i, True),
+            key=f"gen_keep_{sc.id}_{i}", label_visibility="collapsed",
+        )
+        with header_cols[1].expander(
+            f"{outcome_icon} **{case['name']}** — expected {case['expected_outcome']}",
+            expanded=False,
+        ):
+            if case.get("rationale"):
+                st.caption(case["rationale"])
+            for fp_id, val in case["overrides"].items():
+                label = label_by_fp.get(fp_id, fp_id)
+                new_val = st.text_input(
+                    label, value=val,
+                    key=f"gen_ovr_{sc.id}_{i}_{fp_id}",
+                )
+                case["overrides"][fp_id] = new_val
+            new_name = st.text_input(
+                "name", value=case["name"], key=f"gen_name_{sc.id}_{i}",
+            )
+            new_outcome = st.selectbox(
+                "expected", ["success", "failure"],
+                index=0 if case["expected_outcome"] == "success" else 1,
+                key=f"gen_outc_{sc.id}_{i}",
+            )
+            case["name"] = new_name
+            case["expected_outcome"] = new_outcome
+
+    selected_count = sum(1 for v in selection.values() if v)
+    cs1, cs2, cs3 = st.columns([2, 2, 2])
+    if cs1.button(
+        f"Save {selected_count} selected", type="primary",
+        disabled=selected_count == 0, key=f"gen_save_{sc.id}",
+    ):
+        accepted = [
+            {
+                "id": uuid.uuid4().hex[:8],
+                "name": suggestions[i]["name"],
+                "recording_id": recording_id,
+                "expected_outcome": suggestions[i]["expected_outcome"],
+                "overrides": suggestions[i]["overrides"],
+                "source": "ai",
+                "rationale": suggestions[i].get("rationale", ""),
+            }
+            for i, keep in selection.items() if keep
+        ]
+        sc.ai_test_cases = list(sc.ai_test_cases) + accepted
+        save_scenario(DATA_SCENARIOS, sc)
+        st.success(f"Saved {len(accepted)} test case(s).")
+        for k in (suggestions_key, selection_key, f"_gen_target_{sc.id}"):
+            st.session_state.pop(k, None)
+        st.rerun()
+    if cs2.button("Regenerate", key=f"gen_regen_{sc.id}"):
+        for k in (suggestions_key, selection_key):
+            st.session_state.pop(k, None)
+        st.rerun()
+    if cs3.button("Cancel", key=f"gen_cancel_p2_{sc.id}"):
+        for k in (suggestions_key, selection_key, f"_gen_target_{sc.id}"):
+            st.session_state.pop(k, None)
+        st.rerun()
 
 
 def render(scenario_id: str):
@@ -646,14 +1365,20 @@ def render(scenario_id: str):
         st.rerun()
 
     st.title(sc.name)
+    if sc.kind == "recorded":
+        from core.applications import load_application
+        try:
+            app = load_application("data/applications", sc.application_id)
+            st.caption(f"Application: {app.name} · {app.base_url_pattern}")
+        except Exception:
+            st.caption(f"Application: {sc.application_id}")
+        _render_recorded_scenario(sc)
+        return
+
     if sc.base_url:
         st.caption(f"Target page: {sc.base_url}")
     else:
         st.caption("No base URL set — pick a scanned page in Settings.")
-
-    if sc.kind == "recorded":
-        _render_recorded_scenario(sc)
-        return
 
     if st.button(f"▶ Run scenario", type="primary", key=f"run_{sc.id}",
                  disabled=not (sc.base_url or sc.kind == "multi-page")):

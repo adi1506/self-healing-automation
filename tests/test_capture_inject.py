@@ -66,3 +66,56 @@ async def test_event_listeners_emit_to_record_fn(sample_form_url):
         actions = [c["action"] for c in captured]
         assert "fill" in actions or "input" in actions
         await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_click_on_submit_button_does_not_double_record_submit(sample_form_url):
+    """Clicking a submit button inside a form must emit only a `click`, not also
+    a `submit`. Two events for one action causes replay to fail on the second
+    one after the first one navigates away from the form.
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        ctx = await browser.new_context()
+        await ctx.add_init_script(load_inject_js())
+        page = await ctx.new_page()
+        captured: list[dict] = []
+        await page.expose_function("__sha_record", lambda payload: captured.append(payload))
+        await page.goto(sample_form_url)
+        await page.evaluate("() => window.__sha.attachListeners()")
+        # sample_form.html's inline script preventDefaults the submit so the
+        # page stays put and we can read what was captured.
+        page.on("dialog", lambda d: d.dismiss())
+        await page.click('button[type="submit"]')
+        await page.wait_for_timeout(200)
+        actions = [c["action"] for c in captured]
+        assert actions.count("click") == 1
+        assert "submit" not in actions
+        await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_enter_key_submit_still_emits_submit(sample_form_url):
+    """Submitting via Enter (no click on a button) must still record a
+    `submit` step — that's the only signal we have for keyboard-driven form
+    submission.
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        ctx = await browser.new_context()
+        await ctx.add_init_script(load_inject_js())
+        page = await ctx.new_page()
+        captured: list[dict] = []
+        await page.expose_function("__sha_record", lambda payload: captured.append(payload))
+        await page.goto(sample_form_url)
+        await page.evaluate("() => window.__sha.attachListeners()")
+        page.on("dialog", lambda d: d.dismiss())
+        # Programmatic submit with no preceding click — equivalent to the user
+        # hitting Enter in a text field.
+        await page.evaluate(
+            "() => document.getElementById('registrationForm').dispatchEvent(new Event('submit', {bubbles: true, cancelable: true}))"
+        )
+        await page.wait_for_timeout(200)
+        actions = [c["action"] for c in captured]
+        assert "submit" in actions
+        await browser.close()

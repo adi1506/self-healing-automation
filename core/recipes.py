@@ -109,10 +109,20 @@ class RecipeExecutor:
                     )
 
                 if action in ("fill", "click", "select", "check"):
-                    elem = self._resolve_element(recipe, step["target"])
+                    target = (step.get("target") or "").strip()
+                    if not target:
+                        # Leftover seed/placeholder row — skip rather than fail
+                        # the whole scenario. The UI flags these but legacy
+                        # YAMLs may still carry them.
+                        step_results.append({
+                            "step_idx": idx, "status": "SKIPPED",
+                            "error": "step has no target",
+                        })
+                        continue
+                    elem = self._resolve_element(recipe, target)
                     if elem is None:
                         raise RuntimeError(
-                            f"target '{step['target']}' not in scanned elements for "
+                            f"target '{target}' not in scanned elements for "
                             f"{recipe['start_url']}"
                         )
                     handle = await self._setter._find_element(page, elem)

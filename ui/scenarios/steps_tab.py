@@ -4,12 +4,19 @@ import pandas as pd
 from core.recipes import VALID_ACTIONS
 from core.excel_manager import ExcelManager
 from core.ai_matcher import AIMatcher
+from core.ai_service import get_ai_service
 
 DATA_SCANS = "data/scans"
 
 
 def render(sc, on_save):
     """sc is a Scenario; on_save(steps_list) persists changes."""
+    st.caption(
+        "ⓘ **Steps** describe the *actions* the run performs (fill, click, "
+        "select, assert). They're the recipe. The actual *values* used for "
+        "each run live on the **Dataset** tab — one row = one run."
+    )
+
     em = ExcelManager(data_dir=DATA_SCANS)
     elements = em.read_element_map(sc.base_url) if sc.base_url else []
     target_options = [e["element_name"] for e in elements]
@@ -37,13 +44,15 @@ def render(sc, on_save):
         if not sc.base_url:
             st.error("Set a base URL in Settings first.")
         else:
-            ollama_host = os.environ.get("OLLAMA_HOST", "")
-            ollama_model = os.environ.get("OLLAMA_MODEL", "mistral")
-            matcher = AIMatcher(host=ollama_host, model=ollama_model)
+            matcher = AIMatcher()
+            svc = get_ai_service()
             goal = st.session_state.get(f"goal_{sc.id}", "complete the form")
-            suggestion = matcher.suggest_recipe(sc.base_url, elements, goal)
+            with st.spinner("Asking the model to draft steps…"):
+                suggestion = matcher.suggest_recipe(sc.base_url, elements, goal)
             if suggestion is None:
                 st.error("Ollama unavailable or returned an unparseable response.")
+                if svc.last_error:
+                    st.caption(f"Last error: {svc.last_error}")
             else:
                 st.session_state[seed_key] = suggestion["steps"] or st.session_state[seed_key]
                 st.session_state[nonce_key] += 1
@@ -55,3 +64,12 @@ def render(sc, on_save):
         on_save(new_steps)
         st.session_state[seed_key] = new_steps
         st.success("Steps saved.")
+        # Synergy nudge: steps describe *what* to do, but a run also needs the
+        # *values*. If the dataset is empty, point the user at the next step.
+        if not sc.dataset and any(
+            (s.get("action") or "") in ("fill", "select", "check") for s in new_steps
+        ):
+            st.info(
+                "Next: head to the **Dataset** tab to create the test data "
+                "those steps will run against. Each dataset row = one run."
+            )

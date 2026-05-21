@@ -171,3 +171,78 @@ def test_cache_skipped_when_key_is_none(tmp_path):
         svc.generate_json("same", cache_key=None)
         svc.generate_json("same", cache_key=None)
     assert mock_gen.call_count == 2
+
+
+class _PydanticLikeResponse:
+    """Stand-in for ollama._types.GenerateResponse: has `.response`, NOT a dict subclass."""
+    def __init__(self, response: str):
+        self.response = response
+
+
+def test_generate_json_handles_pydantic_response_object(tmp_path):
+    """Modern ollama SDK returns a GenerateResponse Pydantic object, not a dict.
+    The previous implementation silently produced raw='' for these and returned
+    None with no error — every AI feature broke without explanation. This test
+    pins the fix.
+    """
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc._available = True
+    svc._available_at = time.monotonic()
+    with patch.object(svc.client, "generate") as mock_gen:
+        mock_gen.return_value = _PydanticLikeResponse('{"value": "ok"}')
+        result = svc.generate_json("prompt")
+    assert result == {"value": "ok"}
+    assert svc.last_error is None
+
+
+def test_generate_json_sets_last_error_on_unparseable(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc._available = True
+    svc._available_at = time.monotonic()
+    with patch.object(svc.client, "generate") as mock_gen:
+        mock_gen.return_value = {"response": "not json"}
+        result = svc.generate_json("prompt")
+    assert result is None
+    assert "unparseable" in (svc.last_error or "").lower()
+    assert "not json" in (svc.last_error or "")
+
+
+def test_generate_json_sets_last_error_on_empty_response(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc._available = True
+    svc._available_at = time.monotonic()
+    with patch.object(svc.client, "generate") as mock_gen:
+        mock_gen.return_value = _PydanticLikeResponse("")
+        result = svc.generate_json("prompt")
+    assert result is None
+    assert "empty response" in (svc.last_error or "").lower()
+
+
+class _ListResponseLike:
+    def __init__(self, names: list[str]):
+        self.models = [type("M", (), {"model": n})() for n in names]
+
+
+def test_is_available_reports_when_configured_model_missing(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc.model = "phi4:14b"
+    with patch.object(svc.client, "list", return_value=_ListResponseLike(["mistral:latest"])):
+        assert svc.is_available() is False
+    assert "phi4:14b" in (svc.last_error or "")
+    assert "not pulled" in (svc.last_error or "").lower()
+
+
+def test_is_available_true_when_configured_model_present(tmp_path):
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc.model = "phi4:14b"
+    with patch.object(svc.client, "list", return_value=_ListResponseLike(["phi4:14b", "mistral:latest"])):
+        assert svc.is_available() is True
+    assert svc.last_error is None
+
+
+def test_is_available_true_when_listing_is_empty(tmp_path):
+    """Older Ollama or pre-pull state may return empty list — don't false-negative."""
+    svc = AIService(settings_path=str(tmp_path / "s.yaml"))
+    svc.model = "phi4:14b"
+    with patch.object(svc.client, "list", return_value=_ListResponseLike([])):
+        assert svc.is_available() is True

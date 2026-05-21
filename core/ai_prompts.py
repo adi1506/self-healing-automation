@@ -5,7 +5,7 @@ change to invalidate stale entries.
 """
 from __future__ import annotations
 
-PROMPT_VERSION = "1"
+PROMPT_VERSION = "2"
 
 
 def build_match_prompt(old_element: dict, candidates: list[dict]) -> str:
@@ -62,6 +62,8 @@ Respond ONLY with valid JSON in this exact format:
 
 def _summarize_constraints(field: dict) -> str:
     parts = []
+    if field.get("available_options"):
+        parts.append(f"allowed_options=[{field['available_options']}]")
     if field.get("pattern"): parts.append(f"pattern={field['pattern']}")
     if field.get("maxlength"): parts.append(f"maxlength={field['maxlength']}")
     if field.get("minlength"): parts.append(f"minlength={field['minlength']}")
@@ -70,6 +72,80 @@ def _summarize_constraints(field: dict) -> str:
     if field.get("required"): parts.append("required")
     if field.get("autocomplete"): parts.append(f"autocomplete={field['autocomplete']}")
     return ", ".join(parts)
+
+
+def _field_line(field: dict) -> str:
+    """One-line description of a field for inclusion in a row-generation prompt.
+
+    Includes type + constraints (notably allowed_options) so the model can't
+    invent values outside the enumerated set.
+    """
+    name = field.get("element_name", "")
+    etype = field.get("element_type", "")
+    constraints = _summarize_constraints(field) or "none"
+    label = field.get("locator_label") or field.get("placeholder") or ""
+    label_part = f", label='{label}'" if label else ""
+    return f"  - {name} (type={etype}{label_part}, constraints: {constraints})"
+
+
+def build_test_cases_for_recording_prompt(
+    overridable_steps: list[dict], count: int, focus_areas: list[str],
+) -> str:
+    """Prompt the model to emit `count` test-case variants for a recording.
+
+    Each entry in `overridable_steps` describes one fill/select step from the
+    recording — the model references steps by INDEX (not fingerprint id) so it
+    cannot fabricate identifiers. The service layer maps index→fingerprint
+    after parsing.
+    """
+    lines = []
+    for i, step in enumerate(overridable_steps):
+        attrs = step.get("attributes") or {}
+        h5 = attrs.get("html5_constraints") or {}
+        label = (
+            attrs.get("aria_label")
+            or attrs.get("placeholder")
+            or attrs.get("name")
+            or attrs.get("id")
+            or f"field-{i}"
+        )
+        cparts = []
+        if h5.get("required"): cparts.append("required")
+        if h5.get("pattern"): cparts.append(f"pattern={h5['pattern']}")
+        if h5.get("maxlength"): cparts.append(f"maxlength={h5['maxlength']}")
+        if h5.get("minlength"): cparts.append(f"minlength={h5['minlength']}")
+        if h5.get("min") not in ("", None): cparts.append(f"min={h5['min']}")
+        if h5.get("max") not in ("", None): cparts.append(f"max={h5['max']}")
+        if attrs.get("autocomplete"): cparts.append(f"autocomplete={attrs['autocomplete']}")
+        constraints = ", ".join(cparts) or "none"
+        lines.append(
+            f"  Index {i}: action={step.get('action')}, label='{label}', "
+            f"type='{attrs.get('type', '')}', "
+            f"recorded_value={step.get('value')!r}, constraints: {constraints}"
+        )
+    listing = "\n".join(lines)
+    focus_text = ", ".join(focus_areas) if focus_areas else "any kind"
+    return f"""You are a test automation assistant generating variant test cases for a recorded UI flow.
+
+These are the data-entry steps in the recording (referred to by INDEX):
+{listing}
+
+Generate exactly {count} test case variants focused on: {focus_text}.
+
+Rules:
+- Each test case may override ONLY the steps listed above, referenced by INDEX.
+- If a step is not overridden, the recording's recorded_value is reused — do NOT include it.
+- "expected_outcome" is "failure" when the variant should be rejected (validation error, denied auth, server reject) and "success" otherwise.
+- Give each case a short human name (e.g. "Empty username", "SQL injection in password").
+- Honor constraints when generating boundary/invalid values (e.g. exceed maxlength on purpose, violate pattern on purpose).
+
+Respond ONLY with valid JSON in this exact format:
+{{"cases": [
+  {{"name": "<short name>", "expected_outcome": "success"|"failure",
+    "overrides": [{{"step_index": <int>, "value": "<string>"}}],
+    "rationale": "<one sentence>"}}
+]}}
+"""
 
 
 def build_field_value_prompt(
@@ -130,6 +206,7 @@ def build_complementary_row_prompt(
     batch_context: str, row_position: int,
 ) -> str:
     field_names = [f.get("element_name", "") for f in field_defs]
+    field_listing = "\n".join(_field_line(f) for f in field_defs) or "  (no fields)"
     existing_summary = "\n".join(
         f"  Row {i+1}: " + ", ".join(f"{k}={v}" for k, v in r.items() if k in field_names)
         for i, r in enumerate(existing_rows)
@@ -137,12 +214,18 @@ def build_complementary_row_prompt(
     return (
         "You are generating ONE complementary test-data row for a web form.\n"
         f"Batch context: {batch_context}\n"
-        f"Fields: {', '.join(field_names)}\n"
+        "Fields (respect every constraint — for select/radio/checkbox you MUST "
+        "pick one of the listed allowed_options verbatim, never invent new ones; "
+        "for checkbox the values are 'checked' or 'unchecked'):\n"
+        f"{field_listing}\n"
         f"Existing rows in this dataset (do not duplicate):\n{existing_summary}\n"
         f"This is row #{row_position} of the new batch — make it distinct from "
         "both existing rows and the other rows in this batch.\n"
-        "Return strict JSON only with every field as a key:\n"
-        '{"values": {"<field_name>": "<value>"}}'
+        "Also produce a short, human-readable test name (max 6 words) that "
+        "describes what makes THIS row distinctive within the batch context "
+        "(e.g. 'Senior male from Bangalore').\n"
+        "Return strict JSON only:\n"
+        '{"name": "<short row name>", "values": {"<field_name>": "<value>"}}'
     )
 
 

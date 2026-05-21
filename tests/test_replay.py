@@ -69,7 +69,7 @@ async def test_raises_when_nothing_matches(sample_form_url):
             page_context={"url": sample_form_url},
         )
         with pytest.raises(ElementNotFound):
-            await find_element_by_fingerprint(page, fp)
+            await find_element_by_fingerprint(page, fp, timeout_ms=0)
         await browser.close()
 
 
@@ -171,6 +171,6 @@ async def test_replay_recording_reports_failed_step(sample_form_url):
         created_at="", start_url=sample_form_url,
         steps=[Step(index=0, action="fill", element=bad_fp, value="x")],
     )
-    outcome = await replay_recording(recording, headless=True)
+    outcome = await replay_recording(recording, headless=True, element_timeout_ms=0)
     assert outcome.failed_step_index == 0
     assert outcome.error is not None

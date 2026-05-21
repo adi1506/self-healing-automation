@@ -22,10 +22,10 @@ st.markdown("""
 Use the sidebar to navigate:
 
 - **Dashboard** — health overview and recent runs
-- **Scenarios** — build, edit, and run test scenarios (data-driven supported)
 - **Library** — scanned pages as reusable assets
+- **Scenarios** — build, edit, and run test scenarios (data-driven supported)
 - **Reports** — run history, healing log, and activity
 - **Settings** — configuration and migration controls
 
-Start by scanning a page in **Library**, then create a scenario in **Scenarios** and click ▶ Run now.
+Start by scanning a page in **Library**, then create a scenario in **Scenarios** and click ▶ Run scenario.
 """)

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Placeholder select fixture</title>
+  </head>
+  <body>
+    <form id="f">
+      <!-- Netlify-style placeholder: value === text, not empty. -->
+      <label for="country">Country</label>
+      <select id="country" name="country">
+        <option value="Select Country">Select Country</option>
+        <option value="India">India</option>
+        <option value="USA">USA</option>
+        <option value="UK">UK</option>
+      </select>
+
+      <!-- Disabled placeholder pattern. -->
+      <label for="gender">Gender</label>
+      <select id="gender" name="gender">
+        <option value="placeholder" disabled selected>Choose Gender</option>
+        <option value="Male">Male</option>
+        <option value="Female">Female</option>
+      </select>
+
+      <button type="submit">Go</button>
+    </form>
+  </body>
+</html>

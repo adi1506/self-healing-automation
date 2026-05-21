@@ -1,6 +1,7 @@
 import streamlit as st
 from core.reports import counters, aggregate_runs
 from core.scenarios import list_scenarios
+from ui.runs_view import group_runs, render_run_body, run_status
 
 DATA_SCANS = "data/scans"
 DATA_SCENARIOS = "data/scenarios"
@@ -16,15 +17,26 @@ m3.metric("Healed selectors (all-time)", c["healed"])
 
 st.divider()
 st.subheader("Recent runs")
-runs = aggregate_runs(DATA_SCANS)[:10]
-if not runs:
+rows = aggregate_runs(DATA_SCANS)
+if not rows:
     st.info("No runs yet — create a scenario and click ▶ Run now to get started.")
 else:
-    for r in runs:
-        icon = "✓" if r["status"] == "PASS" else "✗"
-        color = "green" if r["status"] == "PASS" else "red"
-        st.markdown(f":{color}[{icon}] **{r['timestamp']}** · {r['test_case_name']} "
-                    f"· {r['element_name']} · {r['url']}")
+    # Show the 10 most-recent runs, grouped by run_id (timestamp fallback for
+    # legacy data). Each run is collapsible and reveals the same row → field
+    # hierarchy used on the Runs tab — with scenario name and URL surfaced in
+    # the header so the dashboard is useful across scenarios.
+    groups = group_runs(rows)
+    for idx, (run_key, bucket) in enumerate(list(groups.items())[:10]):
+        icon, passed, total = run_status(bucket["rows"])
+        ts = bucket["timestamp"] or "—"
+        sc_name = bucket.get("test_case_name") or "—"
+        url = bucket.get("url") or ""
+        header_bits = [f"{icon} {ts}", sc_name, f"{passed}/{total} rows passed"]
+        if url:
+            header_bits.append(url)
+        with st.expander(" · ".join(header_bits),
+                         expanded=(idx == 0 and passed != total)):
+            render_run_body(bucket)
 
 st.divider()
 st.subheader("Quick actions")

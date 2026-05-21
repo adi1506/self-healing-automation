@@ -6,6 +6,7 @@ from urllib.parse import urldefrag, urljoin, urlparse
 from playwright.async_api import async_playwright
 
 from core.scanner import Scanner, _run_async
+from core.browser_launch import launch_browser_and_page
 
 
 SKIP_EXTENSIONS = (
@@ -85,8 +86,7 @@ class Crawler:
         seen.add(start)
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
+            browser, page = await launch_browser_and_page(p)
 
             while queue and len(results) < max_pages:
                 current, depth = queue.popleft()

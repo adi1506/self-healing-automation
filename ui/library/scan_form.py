@@ -14,15 +14,14 @@ def render():
     scanner = Scanner()
     crawler = Crawler(scanner=scanner)
 
-    with st.form("scan_form", clear_on_submit=False):
-        url = st.text_input("Target URL", placeholder="https://your-app.com/form")
-        crawl_site = st.checkbox("Crawl entire site (same-domain)", value=False)
-        c1, c2 = st.columns(2)
-        with c1:
-            max_pages = st.number_input("Max pages", 1, 500, 50, disabled=not crawl_site)
-        with c2:
-            max_depth = st.number_input("Max depth", 1, 10, 5, disabled=not crawl_site)
-        submitted = st.form_submit_button("Scan", type="primary")
+    url = st.text_input("Target URL", placeholder="https://your-app.com/form", key="scan_url")
+    crawl_site = st.checkbox("Crawl entire site (same-domain)", value=False, key="scan_crawl")
+    c1, c2 = st.columns(2)
+    with c1:
+        max_pages = st.number_input("Max pages", 1, 500, 50, disabled=not crawl_site, key="scan_max_pages")
+    with c2:
+        max_depth = st.number_input("Max depth", 1, 10, 5, disabled=not crawl_site, key="scan_max_depth")
+    submitted = st.button("Scan", type="primary", key="scan_submit")
 
     if not submitted or not url:
         return

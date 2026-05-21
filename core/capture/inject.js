@@ -208,21 +208,87 @@
 
     document.addEventListener("click", (ev) => {
       const el = ev.target.closest && ev.target.closest("button, a, [role=button], input[type=submit], input[type=button]");
-      if (el) emit("click", el, null);
+      if (!el) return;
+      window.__sha._lastClickForm = el.closest ? el.closest("form") : null;
+      window.__sha._lastClickAt = Date.now();
+      emit("click", el, null);
     }, true);
 
     window.addEventListener("submit", (ev) => {
       const form = ev.target;
-      if (form && form.tagName === "FORM") emit("submit", form, null);
+      if (!form || form.tagName !== "FORM") return;
+      // Suppress submit events that immediately follow a click on a descendant of
+      // this same form — the click step alone replays the user's intent and will
+      // trigger the form submission naturally. Without this, replay tries to
+      // re-find the form after navigation and raises ElementNotFound.
+      // Enter-key and programmatic submits (no preceding in-form click) still
+      // emit, because _lastClickForm won't match.
+      if (window.__sha._lastClickForm === form && (Date.now() - window.__sha._lastClickAt) < 500) return;
+      emit("submit", form, null);
     }, true);
+  }
+
+  // --- Live-page scanning (for replay-time healing) -----------------
+  // Enumerates every interactive element currently on the page and returns
+  // a fingerprint for each. Used by the replay healer when a stored
+  // fingerprint's locators all miss: candidates are scored against the
+  // stored fingerprint's attributes and the best match wins.
+  //
+  // No state mutation, no listener attachment, no side effects. Safe to
+  // call at any point during a replay run, including mid-flow on a
+  // stateful page.
+  const INTERACTIVE_SELECTOR = [
+    "input:not([type=hidden])",
+    "select",
+    "textarea",
+    "button",
+    "a[href]",
+    "[role=button]",
+    "[role=textbox]",
+    "[role=combobox]",
+    "[role=checkbox]",
+    "[role=radio]",
+    "[role=link]",
+  ].join(", ");
+
+  function isVisible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false;
+    const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    if (style && (style.display === "none" || style.visibility === "hidden")) return false;
+    return true;
+  }
+
+  function scanAll() {
+    const out = [];
+    const seen = new Set();
+    const nodes = document.querySelectorAll(INTERACTIVE_SELECTOR);
+    for (const el of nodes) {
+      if (!(el instanceof HTMLElement)) continue;
+      if (!isVisible(el)) continue;
+      if (seen.has(el)) continue;
+      seen.add(el);
+      try {
+        const fp = buildFingerprint(el);
+        if (fp) out.push(fp);
+      } catch (_) {
+        // Skip elements that throw during fingerprinting — we'd rather
+        // return a partial scan than fail the whole heal attempt.
+      }
+    }
+    return out;
   }
 
   window.__sha = {
     _sigToId: new Map(),
     _attached: false,
     _startTs: Date.now(),
+    _lastClickForm: null,
+    _lastClickAt: 0,
     buildFingerprint,
     attachListeners,
+    scanAll,
   };
 
   // Auto-attach once the DOM is ready. Python can also call

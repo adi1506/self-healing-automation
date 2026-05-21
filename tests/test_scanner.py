@@ -41,6 +41,26 @@ class TestScanElements:
         assert "Female" in gender["available_options"]
         assert "Other" in gender["available_options"]
 
+    def test_excludes_placeholder_options(self, scanner):
+        """Real-world forms often use <option value="Select X">Select X</option> or
+        a disabled first option for the placeholder. Those must not leak into
+        available_options — otherwise the test case generator treats them as
+        real values and the setter ends up passing them to select_option."""
+        url = "file://" + os.path.abspath("test_form/placeholder_selects.html").replace("\\", "/")
+        elements = scanner.scan(url)
+
+        country = next((e for e in elements if e["element_name"] == "Country"), None)
+        assert country is not None
+        opts = [o.strip() for o in country["available_options"].split(",")]
+        assert "Select Country" not in opts, f"placeholder leaked into options: {opts}"
+        assert "USA" in opts and "India" in opts
+
+        gender = next((e for e in elements if e["element_name"] == "Gender"), None)
+        assert gender is not None
+        opts = [o.strip() for o in gender["available_options"].split(",")]
+        assert "Choose Gender" not in opts, f"disabled placeholder leaked: {opts}"
+        assert "Male" in opts and "Female" in opts
+
     @pytest.mark.asyncio
     async def test_captures_radio_group(self, scanner, sample_form_path):
         elements = await scanner.scan(sample_form_path)

@@ -60,6 +60,49 @@ class TestSetFields:
         assert gender_result["actual_value"] == "Male"
         assert gender_result["status"] == "PASS"
 
+    def test_select_value_case_insensitive(self, setter, scanner, manager, sample_form_path):
+        """If the supplied label only differs in case from a real option, fill it anyway.
+        Scenarios authored by users/AI often case-normalize ("male" / "MALE"), and the
+        live DOM keeps the canonical "Male". Forcing the user to fix every casing
+        difference defeats the point of self-healing."""
+        elements = scanner.scan(sample_form_path)
+        manager.save_element_map(sample_form_path, elements)
+        element_map = manager.read_element_map(sample_form_path)
+
+        results = setter.set_fields(sample_form_path, element_map, {"Gender": "male"})
+        gender = next(r for r in results if r["element_name"] == "Gender")
+        assert gender["status"] == "PASS", gender
+        assert gender["actual_value"] == "Male"
+
+    def test_select_value_fuzzy_match(self, setter, scanner, manager, sample_form_path):
+        """A close-but-not-exact label (trailing whitespace, light typo) should resolve
+        rather than blow up with a 30-second Playwright timeout."""
+        elements = scanner.scan(sample_form_path)
+        manager.save_element_map(sample_form_path, elements)
+        element_map = manager.read_element_map(sample_form_path)
+
+        results = setter.set_fields(sample_form_path, element_map, {"Country": "USA "})
+        country = next(r for r in results if r["element_name"] == "Country")
+        assert country["status"] == "PASS"
+        assert country["actual_value"] == "USA"
+
+    def test_select_value_no_match_fails_fast(self, setter, scanner, manager, sample_form_path):
+        """When the value is unrelated to any option, fail fast with a useful error
+        listing the real options — don't sit in a 30-second Playwright timeout."""
+        import time
+        elements = scanner.scan(sample_form_path)
+        manager.save_element_map(sample_form_path, elements)
+        element_map = manager.read_element_map(sample_form_path)
+
+        t0 = time.time()
+        results = setter.set_fields(sample_form_path, element_map, {"Country": "Atlantis"})
+        elapsed = time.time() - t0
+        country = next(r for r in results if r["element_name"] == "Country")
+        assert country["status"] == "FAIL"
+        assert "Atlantis" in country["actual_value"] or "not in options" in country["actual_value"].lower()
+        # Whole 4-field setter run shouldn't take anywhere near Playwright's 30s default.
+        assert elapsed < 10, f"select fail took {elapsed:.1f}s — should be <1s with fail-fast"
+
     @pytest.mark.asyncio
     async def test_sets_radio_button(self, setter, scanner, manager, sample_form_path):
         elements = await scanner.scan(sample_form_path)

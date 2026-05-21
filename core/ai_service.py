@@ -84,14 +84,40 @@ class AIService:
         if self._available is not None and (time.monotonic() - self._available_at) < AVAILABILITY_TTL_SEC:
             return self._available
         try:
-            self.client.list()
-            self._available = True
-            self.last_error = None
+            listing = self.client.list()
+            installed = self._extract_model_names(listing)
+            if installed and self.model not in installed:
+                self._available = False
+                self.last_error = (
+                    f"model '{self.model}' not pulled on host (run: ollama pull {self.model})"
+                )
+            else:
+                self._available = True
+                self.last_error = None
         except Exception as e:
             self._available = False
             self.last_error = str(e)
         self._available_at = time.monotonic()
         return self._available
+
+    @staticmethod
+    def _extract_model_names(listing) -> list[str]:
+        """Pull model names from either a dict or a Pydantic ListResponse."""
+        models = []
+        if hasattr(listing, "models"):
+            models = listing.models or []
+        elif isinstance(listing, dict):
+            models = listing.get("models", []) or []
+        names: list[str] = []
+        for m in models:
+            name = None
+            if hasattr(m, "model"):
+                name = m.model
+            elif isinstance(m, dict):
+                name = m.get("name") or m.get("model")
+            if name:
+                names.append(name)
+        return names
 
     # -------------------------------------------------------------- primitive
     def generate_json(self, prompt: str, *, timeout: float = 30.0,
@@ -143,15 +169,36 @@ class AIService:
             return None
 
         self.last_latency_ms = (time.monotonic() - start) * 1000.0
-        raw = response.get("response", "") if isinstance(response, dict) else ""
+        raw = self._extract_response_text(response)
+        if not raw:
+            self.last_error = (
+                f"model '{self.model}' returned empty response "
+                f"(response type: {type(response).__name__})"
+            )
+            return None
         parsed = self._parse_json_response(raw)
-        if parsed is not None and composite_key is not None:
+        if parsed is None:
+            snippet = raw[:300].replace("\n", " ")
+            self.last_error = f"model returned unparseable JSON: {snippet!r}"
+            return None
+        self.last_error = None
+        if composite_key is not None:
             # Bound the cache at 512 entries (drop oldest entry on overflow).
             if len(self._cache) >= 512:
                 oldest = next(iter(self._cache))
                 self._cache.pop(oldest, None)
             self._cache[composite_key] = parsed
         return parsed
+
+    @staticmethod
+    def _extract_response_text(response) -> str:
+        """Pull the `.response` text from either a dict or a Pydantic GenerateResponse."""
+        if response is None:
+            return ""
+        if isinstance(response, dict):
+            return response.get("response", "") or ""
+        text = getattr(response, "response", None)
+        return text or ""
 
     @staticmethod
     def _parse_json_response(raw: str) -> dict | None:
@@ -194,7 +241,7 @@ class AIService:
                        goal: str) -> dict | None:
         from core.ai_prompts import build_recipe_prompt
         prompt = build_recipe_prompt(page_url, elements, goal)
-        raw = self.generate_json(prompt, timeout=45.0)
+        raw = self.generate_json(prompt, timeout=180.0)
         if not isinstance(raw, dict) or "steps" not in raw:
             return None
         resolved_steps = []
@@ -212,6 +259,63 @@ class AIService:
                 new_step["value"] = step["value"]
             resolved_steps.append(new_step)
         return {"steps": resolved_steps, "reasoning": raw.get("reasoning", "")}
+
+    def suggest_test_cases_for_recording(
+        self, recording, count: int, focus_areas: list[str],
+    ) -> list[dict] | None:
+        """Return `count` test-case variants for a recording, or None on failure.
+
+        Each returned dict: {name, expected_outcome, overrides: {fingerprint_id:
+        value}, rationale}. The LLM references steps by index; we map index →
+        fingerprint id here so the UI only ever sees the canonical key.
+        """
+        from core.ai_prompts import build_test_cases_for_recording_prompt
+
+        overridable = []
+        index_to_fp: dict[int, str] = {}
+        for step in recording.steps:
+            if step.action not in ("fill", "select") or step.element is None:
+                continue
+            idx = len(overridable)
+            index_to_fp[idx] = step.element.id
+            overridable.append({
+                "action": step.action,
+                "value": step.value,
+                "attributes": step.element.attributes,
+            })
+        if not overridable:
+            return []
+
+        prompt = build_test_cases_for_recording_prompt(overridable, count, focus_areas)
+        raw = self.generate_json(prompt, timeout=180.0)
+        if not isinstance(raw, dict) or not isinstance(raw.get("cases"), list):
+            return None
+
+        resolved: list[dict] = []
+        for case in raw["cases"]:
+            if not isinstance(case, dict):
+                continue
+            name = (case.get("name") or "").strip()
+            outcome = case.get("expected_outcome")
+            if outcome not in ("success", "failure"):
+                outcome = "failure"
+            overrides: dict[str, str] = {}
+            for ov in case.get("overrides") or []:
+                if not isinstance(ov, dict):
+                    continue
+                idx = ov.get("step_index")
+                if not isinstance(idx, int) or idx not in index_to_fp:
+                    continue
+                overrides[index_to_fp[idx]] = str(ov.get("value", ""))
+            if not name or not overrides:
+                continue
+            resolved.append({
+                "name": name,
+                "expected_outcome": outcome,
+                "overrides": overrides,
+                "rationale": (case.get("rationale") or "").strip(),
+            })
+        return resolved
 
     def generate_field_value(
         self, field: dict, page_context: dict,
@@ -251,7 +355,7 @@ class AIService:
             if self._is_locked_field(f)
         ]
         prompt = build_refine_row_prompt(field_defs, current_row, refine_prompt, locked)
-        raw = self.generate_json(prompt, timeout=30.0)
+        raw = self.generate_json(prompt, timeout=90.0)
         if not raw or not isinstance(raw.get("values"), dict):
             return None
         out: dict[str, str] = {}
@@ -295,7 +399,9 @@ class AIService:
             prompt = build_complementary_row_prompt(
                 field_defs, existing_rows, batch_context, position,
             )
-            raw = self.generate_json(prompt, timeout=15.0)
+            # Phi-4 14B regularly needs 30s+ for a single JSON row; 15s was
+            # silently timing out and the panel reported "No rows generated."
+            raw = self.generate_json(prompt, timeout=90.0)
             if not raw or not isinstance(raw.get("values"), dict):
                 return None
             row: dict[str, str] = {}
@@ -305,13 +411,19 @@ class AIService:
                     continue
                 v = raw["values"].get(name, "")
                 row[name] = v if isinstance(v, str) else str(v)
+            # Carry the model's per-row label out under a meta key so the
+            # caller can use it for the test name. Field names never start
+            # with "__", so this won't collide with form data.
+            ai_name = raw.get("name")
+            if isinstance(ai_name, str) and ai_name.strip():
+                row["__test_name"] = ai_name.strip()
             return row
 
         futures = [self._executor.submit(_one_row, i + 1) for i in range(n)]
         out: list[dict] = []
         for fut in futures:
             try:
-                row = fut.result(timeout=20.0)
+                row = fut.result(timeout=100.0)
             except Exception:
                 row = None
             if row is not None:
@@ -335,7 +447,7 @@ class AIService:
         from core.ai_prompts import build_suggest_scenarios_prompt
         prompt = build_suggest_scenarios_prompt(page)
         cache_key = ("suggest_scenarios", page.get("url", ""), page.get("title", ""))
-        raw = self.generate_json(prompt, timeout=30.0, cache_key=cache_key)
+        raw = self.generate_json(prompt, timeout=180.0, cache_key=cache_key)
         if not raw or not isinstance(raw.get("scenarios"), list):
             return []
         out = []

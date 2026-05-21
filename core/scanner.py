@@ -4,6 +4,8 @@ import asyncio
 import sys
 from playwright.async_api import async_playwright
 
+from core.browser_launch import launch_browser_and_page
+
 
 def _run_async(coro):
     """Run an async coroutine from sync code, avoiding event loop conflicts with Streamlit."""
@@ -16,6 +18,66 @@ def _run_async(coro):
         loop.close()
 
 
+def _dedupe_element_names(elements: list[dict]) -> None:
+    """Make `element_name` unique across the list, in place.
+
+    Streamlit's data_editor (scenario dataset) requires unique column names,
+    and the dataset stores per-row values keyed by element_name — so two
+    fields sharing a name silently lose data even before Streamlit complains.
+
+    Flutter Web (HDBFS Angular-ish app) and aria-label-only forms commonly
+    label a username+password pair with the same accessible name. When that
+    happens, keep the first occurrence's name as-is and suffix later ones
+    with their type ("Login (password)") when types differ, falling back to
+    a sequential index ("Login (2)") when types are the same too.
+    """
+    by_name: dict[str, list[dict]] = {}
+    for el in elements:
+        by_name.setdefault(el.get("element_name") or "", []).append(el)
+    taken = {el.get("element_name") or "" for el in elements}
+    for name, group in by_name.items():
+        if len(group) < 2:
+            continue
+        for i, el in enumerate(group[1:], start=2):
+            etype = el.get("element_type") or ""
+            type_suffix = etype.split("-", 1)[1] if "-" in etype else etype
+            candidate = f"{name} ({type_suffix})" if type_suffix else f"{name} ({i})"
+            if candidate in taken:
+                candidate = f"{name} ({i})"
+                k = i
+                while candidate in taken:
+                    k += 1
+                    candidate = f"{name} ({k})"
+            el["element_name"] = candidate
+            taken.add(candidate)
+
+
+async def _wait_for_interactive(page, deadline_seconds: int = 12, poll_ms: int = 500) -> None:
+    """Wait until form fields appear, or deadline expires.
+
+    Specifically waits for inputs/textareas/selects — NOT buttons. SPAs often
+    render an app shell (nav icons, hamburger, role=button decorations) within
+    the first second, then load the actual form a few seconds later. Polling on
+    buttons would fire on the shell and miss the form; polling on form fields
+    waits for the thing the scanner actually cares about.
+
+    Static pages return on the first poll (~0ms overhead). SPAs that render
+    fields after networkidle (HDBFS Angular app behind Radware is the canonical
+    case) get up to `deadline_seconds` to finish. Never raises — if nothing
+    appears, the scanner proceeds and reports empty, same as before this guard.
+    """
+    js = "() => document.querySelectorAll('input:not([type=hidden]), textarea, select').length"
+    elapsed = 0
+    while elapsed < deadline_seconds * 1000:
+        try:
+            if await page.evaluate(js) > 0:
+                return
+        except Exception:
+            return
+        await page.wait_for_timeout(poll_ms)
+        elapsed += poll_ms
+
+
 class Scanner:
     def scan(self, url: str) -> list[dict]:
         """Scan a web page and extract all interactive elements with multiple locators."""
@@ -24,8 +86,7 @@ class Scanner:
     async def _scan_async(self, url: str) -> list[dict]:
         """Async implementation of scan."""
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
+            browser, page = await launch_browser_and_page(p)
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             # Allow client-side rendered forms (SPA / schema-driven) to finish
             # building DOM before we extract elements. Static forms hit idle
@@ -34,6 +95,11 @@ class Scanner:
                 await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
                 pass
+            # Some SPAs (e.g. HDBFS Angular app behind Radware) render the form
+            # a few seconds AFTER networkidle, because the bootstrap chunk fires
+            # follow-up requests that don't reopen the idle clock. Poll briefly
+            # for any interactive element to appear before giving up.
+            await _wait_for_interactive(page, deadline_seconds=10)
             elements = await self.scan_current_page(page)
             await browser.close()
             return elements
@@ -104,6 +170,7 @@ class Scanner:
                 elements.append(elem)
                 sno += 1
 
+        _dedupe_element_names(elements)
         return elements
 
     async def _get_label_text(self, page, element) -> str:
@@ -355,10 +422,26 @@ class Scanner:
         constraints = await self._get_constraint_attrs(page, element)
         label_text = await self._get_label_text(page, element)
 
+        # Drop placeholder options. Three patterns we've seen in the wild:
+        #   1. <option value="">Select X</option>         — spec-compliant, value blank
+        #   2. <option value="Select X">Select X</option> — value mirrors the visible
+        #      "Select X" text (forms that bind the select's value to its display label)
+        #   3. <option disabled selected>Choose…</option> — disabled default
+        # If any of these leak in, the test case generator picks them as the
+        # happy-path value, the setter passes them to select_option, and the
+        # whole field fails. Filter aggressively at the source.
         options = await element.evaluate("""
-            el => Array.from(el.options)
-                .filter(o => o.value !== '')
-                .map(o => o.text.trim())
+            el => Array.from(el.options).filter((o, i) => {
+                if (o.value === '') return false;
+                if (o.disabled) return false;
+                if (o.hidden) return false;
+                const text = (o.text || '').trim();
+                // First option with placeholder-style copy: "Select X", "Choose X",
+                // "-- X --", "— X —". Restrict to index 0 so a real option named
+                // "Select All" further down the list isn't dropped.
+                if (i === 0 && /^(select|choose|pick|--|—)\\b/i.test(text)) return false;
+                return true;
+            }).map(o => o.text.trim())
         """)
         selected = await element.evaluate("""
             el => el.options[el.selectedIndex] ? el.options[el.selectedIndex].text.trim() : ''
@@ -481,13 +564,13 @@ class Scanner:
 
     async def _scan_with_context_async(self, url: str) -> dict:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
+            browser, page = await launch_browser_and_page(p)
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
                 pass
+            await _wait_for_interactive(page, deadline_seconds=12)
             elements = await self.scan_current_page(page)
             page_context = await self._extract_page_context(page)
             await browser.close()

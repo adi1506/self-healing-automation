@@ -195,6 +195,17 @@ class TestGenerateOrchestrator:
             assert "ai_context" in r
             assert r["ai_context"] == ""
 
+    def test_generate_marks_happy_path_success_and_negatives_failure(self, gen):
+        fields = [
+            _field(element_name="Email", element_type="input-email", required=True),
+            _field(element_name="Age", element_type="input-number", min="18", max="120"),
+        ]
+        rows = gen.generate(fields, page_context={}, mode="compact")
+        assert rows[0]["test_case_name"] == "Happy path"
+        assert rows[0]["expected_outcome"] == "success"
+        for r in rows[1:]:
+            assert r["expected_outcome"] == "failure"
+
     def test_generate_thorough_mode(self, gen):
         fields = [
             _field(element_name="Customer Reference", pattern="[A-Z]{4}[0-9]{4}",

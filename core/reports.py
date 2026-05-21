@@ -18,7 +18,10 @@ def aggregate_runs(scans_dir: str) -> list[dict]:
                 "run_id": row.get("run_id", ""),
                 "timestamp": row.get("timestamp", ""),
                 "test_case_name": row.get("test_case_name", ""),
+                "row_label": row.get("row_label", ""),
                 "element_name": row.get("element_name", ""),
+                "expected_value": row.get("expected_value", ""),
+                "actual_value": row.get("actual_value", ""),
                 "status": row.get("status", ""),
                 "screenshot": row.get("screenshot", ""),
             }

@@ -20,6 +20,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Optional, Tuple
 
 from core.recorder import RecorderSession
 from core.recording import save_recording
@@ -52,6 +53,34 @@ async def _candidates_from_page(page) -> list[dict]:
     )
 
 
+async def _snapshot_page(session) -> Optional[Tuple[str, list[dict]]]:
+    """Capture (url, candidates) from the live page.
+
+    Returns None when the page is closed or capture fails partway — callers
+    keep their previous snapshot in that case. URL and candidates are returned
+    together so the picker never shows a URL paired with candidates from a
+    different page.
+    """
+    if session.page.is_closed():
+        return None
+    try:
+        url = session.page.url
+        candidates = await _candidates_from_page(session.page)
+        return url, candidates
+    except Exception:
+        return None
+
+
+async def _snapshot_storage(session) -> Optional[dict]:
+    """Capture context.storage_state() if the context is still live."""
+    if session._context is None:
+        return None
+    try:
+        return await session._context.storage_state()
+    except Exception:
+        return None
+
+
 async def _run(args: argparse.Namespace) -> int:
     storage_state = None
     if args.storage_state_path:
@@ -66,28 +95,44 @@ async def _run(args: argparse.Namespace) -> int:
     )
     await session.start(start_url=args.start_url)
 
+    # Snapshots are refreshed during the recording, so the latest post-login
+    # state is already in memory by the time the user closes the window.
+    # Reading page.url / page.evaluate AFTER close always fails, which is the
+    # bug this guards against.
+    final_url = ""
+    candidates: list[dict] = []
+    state_payload: Optional[dict] = None
+
+    want_state = bool(args.output_storage_state)
+
+    async def refresh() -> None:
+        nonlocal final_url, candidates, state_payload
+        snap = await _snapshot_page(session)
+        if snap is not None:
+            final_url, candidates = snap
+        if want_state:
+            state_snap = await _snapshot_storage(session)
+            if state_snap is not None:
+                state_payload = state_snap
+
     if args.auto_close_ms and args.auto_close_ms > 0:
         await session.page.wait_for_timeout(args.auto_close_ms)
+        await refresh()
     else:
-        # Wait until the user closes the window.
+        last_seen_url: Optional[str] = None
         while not session.page.is_closed():
-            await asyncio.sleep(0.5)
-
-    # Capture candidates BEFORE stopping (stop closes the page).
-    candidates: list[dict] = []
-    final_url = ""
-    state_payload = None
-    try:
-        if not session.page.is_closed():
-            final_url = session.page.url
-            candidates = await _candidates_from_page(session.page)
-            if args.output_storage_state and session._context:
+            try:
+                cur_url = session.page.url
+            except Exception:
+                break
+            if cur_url != last_seen_url:
+                last_seen_url = cur_url
                 try:
-                    state_payload = await session._context.storage_state()
+                    await session.page.wait_for_load_state("load", timeout=3000)
                 except Exception:
-                    state_payload = None
-    except Exception:
-        pass  # page closed unexpectedly; candidates/state stay empty
+                    pass
+                await refresh()
+            await asyncio.sleep(0.5)
 
     recording = await session.stop(name=args.name or "untitled")
 
