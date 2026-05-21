@@ -53,20 +53,32 @@ async def _candidates_from_page(page) -> list[dict]:
     )
 
 
-async def _snapshot_page(session) -> Optional[Tuple[str, list[dict]]]:
-    """Capture (url, candidates) from the live page.
+async def _required_fields_from_page(page) -> list[dict]:
+    """Snapshot required fields on the page using inject.js's helper.
+    Returns [] if the helper isn't available (e.g., page not yet injected)."""
+    try:
+        return await page.evaluate(
+            "() => (window.__sha && window.__sha.scanRequiredFields) ? window.__sha.scanRequiredFields() : []"
+        )
+    except Exception:
+        return []
+
+
+async def _snapshot_page(session) -> Optional[Tuple[str, list[dict], list[dict]]]:
+    """Capture (url, candidates, required_fields) from the live page.
 
     Returns None when the page is closed or capture fails partway — callers
-    keep their previous snapshot in that case. URL and candidates are returned
-    together so the picker never shows a URL paired with candidates from a
-    different page.
+    keep their previous snapshot in that case. URL, candidates, and the
+    required-field snapshot are returned together so the picker never shows
+    a URL paired with candidates from a different page.
     """
     if session.page.is_closed():
         return None
     try:
         url = session.page.url
         candidates = await _candidates_from_page(session.page)
-        return url, candidates
+        required = await _required_fields_from_page(session.page)
+        return url, candidates, required
     except Exception:
         return None
 
@@ -102,6 +114,7 @@ async def _run(args: argparse.Namespace) -> int:
     final_url = ""
     candidates: list[dict] = []
     state_payload: Optional[dict] = None
+    required_fields_per_page: dict[str, list[dict]] = {}
 
     want_state = bool(args.output_storage_state)
 
@@ -109,7 +122,8 @@ async def _run(args: argparse.Namespace) -> int:
         nonlocal final_url, candidates, state_payload
         snap = await _snapshot_page(session)
         if snap is not None:
-            final_url, candidates = snap
+            final_url, candidates, required = snap
+            required_fields_per_page[final_url] = required
         if want_state:
             state_snap = await _snapshot_storage(session)
             if state_snap is not None:
@@ -141,7 +155,11 @@ async def _run(args: argparse.Namespace) -> int:
 
     Path(args.output_candidates).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output_candidates, "w", encoding="utf-8") as f:
-        json.dump({"candidates": candidates, "final_url": final_url}, f)
+        json.dump({
+            "candidates": candidates,
+            "final_url": final_url,
+            "required_fields_per_page": required_fields_per_page,
+        }, f)
 
     if state_payload is not None and args.output_storage_state:
         Path(args.output_storage_state).parent.mkdir(parents=True, exist_ok=True)

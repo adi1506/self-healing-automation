@@ -376,6 +376,77 @@ if app_id:
         login_rec = load_recording(rec_path)
         login_rec.kind = "login"
         login_rec.success_signal = signal
+
+        # Pre-save scan: warn if the form has required fields the recording
+        # doesn't fill. The user can either add steps via the AI helper,
+        # save anyway (records acknowledged_missing_required), or cancel.
+        filled_ids = {
+            s.element.id for s in login_rec.steps
+            if s.element is not None and s.action in ("fill", "select", "check")
+        }
+        required_pages = cand_data.get("required_fields_per_page", {}) or {}
+        missing: list[dict] = []
+        for _url, req_list in required_pages.items():
+            for req_fp in req_list:
+                if not req_fp.get("is_empty"):
+                    continue
+                if req_fp["id"] in filled_ids:
+                    continue
+                missing.append(req_fp)
+
+        ack_key = f"_d1_ack_{app_id}"
+        if missing and not st.session_state.get(ack_key):
+            st.warning("**Heads up — before saving this recording**")
+            for m in missing:
+                a = m.get("attributes") or {}
+                label = a.get("nearest_label_text") or a.get("id") or "(unnamed)"
+                st.markdown(
+                    f"- The form has a required field **`{label}`** that "
+                    f"your recording doesn't fill. When this runs in a fresh "
+                    f"browser, that field will be empty and the form may not "
+                    f"submit."
+                )
+            cols2 = st.columns([2, 2, 2, 4])
+            if cols2[0].button("Add steps to fill them",
+                               key=f"d1_add_{app_id}",
+                               type="primary"):
+                from core.ai_test_data import value_for_field
+                from core.recording import Step, ElementFingerprint
+                for m in missing:
+                    login_rec.steps.append(Step(
+                        index=0,  # rewritten below
+                        action="fill",
+                        value=value_for_field(m.get("attributes") or {}),
+                        element=ElementFingerprint.from_dict({
+                            "id": m["id"],
+                            "primary_locator": m["primary_locator"],
+                            "fallback_locators": m.get("fallback_locators", []),
+                            "attributes": m.get("attributes") or {},
+                            "page_context": m.get("page_context", {}),
+                        }),
+                        inserted_by="auto-heal",
+                    ))
+                for i, s in enumerate(login_rec.steps):
+                    s.index = i
+                st.session_state[ack_key] = "added"
+                # Fall through to save
+            elif cols2[1].button("Save anyway", key=f"d1_anyway_{app_id}"):
+                login_rec.acknowledged_missing_required = [
+                    (m.get("attributes") or {}).get("id")
+                    or (m.get("attributes") or {}).get("name")
+                    or "(unknown)"
+                    for m in missing
+                ]
+                st.session_state[ack_key] = "ack"
+                # Fall through to save
+            elif cols2[2].button("Cancel", key=f"d1_cancel_{app_id}"):
+                for k in ("login_proc_pid", "login_app_id", "login_url"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+            else:
+                # Block save until user picks one
+                st.stop()
+
         target = os.path.join(APP_DIR, app_id, "login_recording.yaml")
         save_recording(target, login_rec)
 
@@ -395,6 +466,7 @@ if app_id:
 
         for k in ("login_proc_pid", "login_app_id", "login_url"):
             st.session_state.pop(k, None)
+        st.session_state.pop(ack_key, None)  # clear the D1 ack flag
         st.session_state["login_recorded_app_id"] = app.id
         st.rerun()
     st.stop()
