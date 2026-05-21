@@ -32,12 +32,18 @@ class HealContext:
 
     `force_runner_up` maps fingerprint id to a top_k_candidates index —
     used by the runner-up retry path in the run report.
+
+    `pre_submit_snapshot` maps step index -> list of required-field
+    fingerprints captured just before a submit-like action runs. A
+    downstream failure can diff against this state to identify newly
+    required fields that the recording never knew to fill.
     """
     action: str = ""
     ai_matcher: object | None = None
     cache: dict[str, HealDecision] = field(default_factory=dict)
     last_decision: Optional[HealDecision] = None
     force_runner_up: dict[str, int] = field(default_factory=dict)
+    pre_submit_snapshot: dict[int, list[dict]] = field(default_factory=dict)
 
 
 def _locator_for(page: Page, locator: dict) -> Locator:
@@ -173,6 +179,24 @@ async def execute_step(
         timeout_ms=element_timeout_ms,
         heal_context=heal_context,
     )
+    # Pre-submit scan: for click/submit actions that target a button,
+    # snapshot the form's required fields so a downstream failure can
+    # diff against this state.
+    is_submit_like = (
+        step.action in ("click", "submit")
+        and step.element is not None
+        and (
+            step.element.attributes.get("tag", "").lower() in ("button", "input")
+            or step.element.attributes.get("role", "").lower() == "button"
+        )
+    )
+    if is_submit_like and heal_context is not None:
+        try:
+            required_list = await page.evaluate("window.__sha.scanRequiredFields()")
+            heal_context.pre_submit_snapshot[step.index] = required_list
+        except Exception:
+            pass  # Non-fatal — scan failure shouldn't abort the step.
+
     if step.action == "fill":
         await loc.first.fill(value or "")
     elif step.action == "click" or step.action == "submit":
@@ -200,6 +224,7 @@ class ReplayOutcome:
     run_dir: Optional[str] = None
     promoted_heals: list[dict] = field(default_factory=list)  # one entry per heal written back
     run_id: str = ""
+    new_required_fields_detected: list[dict] = field(default_factory=list)
 
 
 def _promote_heals_to_recording(
@@ -469,6 +494,43 @@ async def replay_recording(
                         result["heal_diagnostics"] = d.diagnostics
                     outcome.failed_step_index = step.index
                     outcome.error = f"{type(e).__name__}: {e}"
+
+                    # Post-submit error scan: if a step just before this one
+                    # was a submit-like action, scan for new error messages
+                    # and identify required fields the recording didn't fill.
+                    prev_step = recording.steps[step.index - 1] if step.index > 0 else None
+                    prev_was_submit = (
+                        prev_step is not None
+                        and prev_step.action in ("click", "submit")
+                    )
+                    if prev_was_submit and heal_context is not None:
+                        try:
+                            errors = await page.evaluate("window.__sha.scanPostSubmitErrors()")
+                            pre_required = heal_context.pre_submit_snapshot.get(prev_step.index, [])
+                            filled_fp_ids = {
+                                s.element.id for s in recording.steps[:step.index]
+                                if s.element is not None and s.action in ("fill", "select", "check")
+                            }
+                            new_required = []
+                            for req in pre_required:
+                                if not req.get("is_empty"):
+                                    continue
+                                if req["id"] in filled_fp_ids:
+                                    continue
+                                err_text = next(
+                                    (err["error_text"] for err in errors
+                                     if err.get("associated_field")
+                                        and err["associated_field"]["id"] == req["id"]),
+                                    "",
+                                )
+                                new_required.append({
+                                    "fingerprint": req,
+                                    "error_text": err_text,
+                                })
+                            outcome.new_required_fields_detected = new_required
+                        except Exception:
+                            pass
+
                     failed = True
                 if run_dir:
                     shot_path = os.path.join(run_dir, f"step_{step.index:03d}.png")

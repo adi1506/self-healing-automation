@@ -344,3 +344,75 @@ async def test_replay_with_force_runner_up_uses_second_best(tmp_path):
     assert out_forced.healed_steps == 1, out_forced.error
     healed_forced = out_forced.step_results[0].get("healed")
     assert healed_forced["new_primary_locator"]["value"] == "mobile"
+
+
+@pytest.mark.asyncio
+async def test_detects_new_required_field_on_submit_failure(tmp_path):
+    """Form gains a required `country` field. Scenario fills name, clicks
+    submit, next-step assertion fails. Replay should detect the new required
+    field in outcome.new_required_fields_detected."""
+    from core.recording import save_recording, load_recording
+
+    html = """<!doctype html><html><body><form id="f" onsubmit="
+        const c = document.getElementById('country');
+        if (!c.value) {
+            const e = document.createElement('div');
+            e.className = 'error-message';
+            e.id = 'country-error';
+            e.textContent = 'Country is required';
+            c.parentElement.appendChild(e);
+            return false;
+        }
+        document.body.innerHTML = '<h1 id=done>Done</h1>';
+        return false;
+    ">
+        <input id="name" name="name" required>
+        <input id="country" name="country" aria-required="true">
+        <button type="submit" id="submit-btn">Submit</button>
+    </form></body></html>"""
+    page_path = tmp_path / "f.html"
+    page_path.write_text(html, encoding="utf-8")
+    url = "file://" + str(page_path).replace("\\", "/")
+
+    fp_name = _fp("el-name", primary_strategy="id", primary_value="name",
+                  attrs={"tag": "input", "type": "text", "id": "name", "name": "name",
+                         "nearest_label_text": "Name",
+                         "html5_constraints": {"pattern": "", "required": True,
+                                               "maxlength": "", "minlength": "", "min": "", "max": ""}})
+    fp_submit = _fp("el-submit", primary_strategy="id", primary_value="submit-btn",
+                    attrs={"tag": "button", "type": "submit", "id": "submit-btn",
+                           "nearest_label_text": "Submit",
+                           "html5_constraints": {"pattern": "", "required": False,
+                                                 "maxlength": "", "minlength": "", "min": "", "max": ""}})
+    fp_done = _fp("el-done", primary_strategy="id", primary_value="done",
+                  attrs={"tag": "h1", "type": "", "id": "done",
+                         "nearest_label_text": "",
+                         "html5_constraints": {"pattern": "", "required": False,
+                                               "maxlength": "", "minlength": "", "min": "", "max": ""}})
+
+    rec = Recording(
+        id="r-n2", name="t", kind="scenario", application_id="a",
+        created_at="2026-05-21", start_url=url,
+        steps=[
+            Step(index=0, action="fill", value="Alice", element=fp_name),
+            Step(index=1, action="click", value=None, element=fp_submit),
+            Step(index=2, action="click", value=None, element=fp_done),
+        ],
+    )
+    rec_path = tmp_path / "rec.yaml"
+    save_recording(str(rec_path), rec)
+
+    from core.replay import replay_recording
+    outcome = await replay_recording(
+        load_recording(str(rec_path)),
+        recording_path=str(rec_path),
+        headless=True, healing_enabled=True,
+        promote_on_pass=False,
+    )
+    assert outcome.failed_step_index == 2  # the "Done" step never loaded
+    assert outcome.new_required_fields_detected
+    names = [
+        nr["fingerprint"]["attributes"].get("id") or nr["fingerprint"]["attributes"].get("name")
+        for nr in outcome.new_required_fields_detected
+    ]
+    assert "country" in names
