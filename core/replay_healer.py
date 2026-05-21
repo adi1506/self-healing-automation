@@ -47,6 +47,16 @@ _WEIGHTS = {
 
 # --- Result types --------------------------------------------------------
 @dataclass
+class CandidateRef:
+    """A scored candidate preserved so the run-report can offer 'retry
+    with second-best' on failure. The chosen heal is top_k_candidates[0]."""
+    primary_locator: dict
+    fallback_locators: list[dict]
+    attributes: dict
+    score: float
+
+
+@dataclass
 class HealDecision:
     """Outcome of a heal attempt against the live page.
 
@@ -63,10 +73,21 @@ class HealDecision:
     new_primary_locator: Optional[dict] = None
     new_fallback_locators: list[dict] = field(default_factory=list)
     diagnostics: str = ""
+    top_k_candidates: list[CandidateRef] = field(default_factory=list)
 
     @classmethod
-    def unresolved(cls, diagnostics: str, runner_up_score: float = 0.0) -> "HealDecision":
-        return cls(method="unresolved", diagnostics=diagnostics, runner_up_score=runner_up_score)
+    def unresolved(
+        cls,
+        diagnostics: str,
+        runner_up_score: float = 0.0,
+        top_k_candidates: Optional[list] = None,
+    ) -> "HealDecision":
+        return cls(
+            method="unresolved",
+            diagnostics=diagnostics,
+            runner_up_score=runner_up_score,
+            top_k_candidates=list(top_k_candidates or []),
+        )
 
 
 # --- Action / URL guards -------------------------------------------------
@@ -318,6 +339,17 @@ def select_match(
     runner_up_score = scored[1][0] if len(scored) > 1 else 0.0
     margin = top_score - runner_up_score
 
+    top_k: list[CandidateRef] = []
+    for sc, _matched, fp in scored[:3]:
+        primary = _derive_primary_locator(fp)
+        fallbacks = _derive_fallback_locators(fp, primary)
+        top_k.append(CandidateRef(
+            primary_locator=primary,
+            fallback_locators=fallbacks,
+            attributes=dict(fp.attributes),
+            score=sc,
+        ))
+
     def _top_n_diag(n: int = 3) -> str:
         parts = []
         for i, (sc, _, fp) in enumerate(scored[:n]):
@@ -338,6 +370,7 @@ def select_match(
             new_primary_locator=primary,
             new_fallback_locators=fallbacks,
             diagnostics=_top_n_diag(),
+            top_k_candidates=top_k,
         )
 
     # Gray zone: AI confirmation
@@ -361,6 +394,7 @@ def select_match(
                 new_primary_locator=primary,
                 new_fallback_locators=fallbacks,
                 diagnostics=f"AI confirmed top candidate (conf={ai_result.get('confidence', 0):.2f}); {_top_n_diag()}",
+                top_k_candidates=top_k,
             )
 
     # Unresolved — explain why
@@ -370,7 +404,7 @@ def select_match(
         why = f"top score {top_score:.2f} but margin over runner-up only {margin:.2f} (need {margin_req:.2f}) — ambiguous"
     else:
         why = f"top score {top_score:.2f} in gray zone, no AI confirmation available"
-    return HealDecision.unresolved(diagnostics=f"{why}; {_top_n_diag()}", runner_up_score=runner_up_score)
+    return HealDecision.unresolved(diagnostics=f"{why}; {_top_n_diag()}", runner_up_score=runner_up_score, top_k_candidates=top_k)
 
 
 def _fingerprint_to_legacy_dict(fp: ElementFingerprint) -> dict:

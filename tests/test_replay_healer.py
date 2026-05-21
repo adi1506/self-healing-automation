@@ -272,3 +272,33 @@ def test_heal_decision_carries_new_locators_picked_from_candidate():
     assert decision.new_primary_locator == {"strategy": "id", "value": "phone_v2"}
     # Fallbacks should include the candidate's name
     assert {"strategy": "name", "value": "phone_number"} in decision.new_fallback_locators
+
+
+def test_heal_decision_preserves_top_k_candidates():
+    from core.replay_healer import select_match, CandidateRef
+    stored = _fp(
+        id="phone_v1", name="phone", nearest_label_text="Phone",
+        placeholder="(555) 555-5555", autocomplete="tel",
+    )
+    cand_good = _fp(
+        id="phone_v2", name="phone_number", nearest_label_text="Phone",
+        placeholder="(555) 555-5555", autocomplete="tel",
+    )
+    cand_mid = _fp(
+        id="mobile", name="mobile", nearest_label_text="Mobile Number",
+        placeholder="(555) 555-5555", autocomplete="tel",
+    )
+    cand_low = _fp(
+        id="zip", name="zip", nearest_label_text="ZIP Code",
+        placeholder="12345", autocomplete="postal-code",
+    )
+    decision = select_match(stored, [cand_good, cand_mid, cand_low], action="fill")
+    assert decision.method in ("auto", "ai-confirmed")
+    assert isinstance(decision.top_k_candidates, list)
+    assert 1 <= len(decision.top_k_candidates) <= 3
+    assert isinstance(decision.top_k_candidates[0], CandidateRef)
+    # Top must be the actual chosen one
+    assert decision.top_k_candidates[0].attributes.get("name") == "phone_number"
+    # Scores must be in descending order
+    scores = [c.score for c in decision.top_k_candidates]
+    assert scores == sorted(scores, reverse=True)
