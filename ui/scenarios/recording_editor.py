@@ -1,7 +1,7 @@
 """Inline editor for a recording's steps.
 
-Renders one row per step with action, target, editable value, delete, and
-insert-above buttons. Task D4 (revert popover) will build on top of this.
+Renders one row per step with action, target, editable value, delete,
+insert-above, and revert-from-history buttons.
 """
 import streamlit as st
 from core.recording import Recording, Step
@@ -23,8 +23,8 @@ def render(scenario, recording_id: str, on_save) -> None:
 
     st.caption(
         "ⓘ **Recording steps** — captured from real interactions. You can "
-        "edit step values inline, insert a fill step above any row, or "
-        "delete a step. Revert from heal history ships in a follow-up."
+        "edit step values inline, insert a fill step above any row, delete "
+        "a step, or revert a locator to an earlier heal-history state."
     )
 
     if not rec.steps:
@@ -38,7 +38,7 @@ def render(scenario, recording_id: str, on_save) -> None:
 
     # Render each step as a row
     for i, s in enumerate(rec.steps):
-        cols = st.columns([0.5, 1.5, 3, 3, 0.5, 0.5, 0.6])
+        cols = st.columns([0.5, 1.5, 3, 3, 0.5, 0.5, 0.5, 0.6])
         cols[0].write(f"**{i}**")
         cols[1].write(f"`{s.action}`")
         cols[2].markdown(_target_label(s) or ":gray[(no target)]")
@@ -70,13 +70,49 @@ def render(scenario, recording_id: str, on_save) -> None:
                 ss.index = j
             on_save(rec)
             st.rerun()
-        # Marker
+        # Revert (only when there's history)
+        if s.element and s.element.fingerprint_history:
+            if cols[6].button("↶", key=f"rec_rev_{recording_id}_{i}",
+                              help="Revert from heal history"):
+                st.session_state[f"_rev_popup_{recording_id}_{i}"] = True
+                st.rerun()
+        else:
+            cols[6].write("")
+        # Marker (now at index 7)
         marker_parts = []
         if s.inserted_by:
             marker_parts.append(f":gray[{s.inserted_by}]")
         if s.element and s.element.fingerprint_history:
             marker_parts.append(f":gray[↶{len(s.element.fingerprint_history)}]")
-        cols[6].markdown(" ".join(marker_parts) or "")
+        cols[7].markdown(" ".join(marker_parts) or "")
+
+        # Revert popover — rendered beneath the row when its flag is set
+        if st.session_state.get(f"_rev_popup_{recording_id}_{i}", False):
+            with st.container(border=True):
+                st.markdown(f"**Revert step {i}**")
+                if not (s.element and s.element.fingerprint_history):
+                    st.info("No history to revert from.")
+                else:
+                    history = s.element.fingerprint_history
+                    for hidx in range(len(history) - 1, -1, -1):
+                        h = history[hidx]
+                        old = h.previous_primary_locator or {}
+                        st.markdown(
+                            f"- `{old.get('strategy', '')}:{old.get('value', '')}` "
+                            f":gray[— {h.timestamp} · run `{h.run_id}` · "
+                            f"conf {(h.confidence or 0):.0%}]"
+                        )
+                        if st.button(
+                            "Revert to this state",
+                            key=f"rec_revchoose_{recording_id}_{i}_{hidx}",
+                        ):
+                            _apply_revert(s, hidx)
+                            on_save(rec)
+                            st.session_state.pop(f"_rev_popup_{recording_id}_{i}", None)
+                            st.rerun()
+                if st.button("Cancel", key=f"rec_revcancel_{recording_id}_{i}"):
+                    st.session_state.pop(f"_rev_popup_{recording_id}_{i}", None)
+                    st.rerun()
 
     # Save (for value edits)
     if st.button("Save value edits", type="primary",
@@ -97,3 +133,44 @@ def _target_label(step: Step) -> str:
         or step.element.primary_locator.get("value", "")
         or ""
     )
+
+
+def _apply_revert(step: Step, target_hidx: int) -> None:
+    """Revert the given step's element to the state captured at history
+    index `target_hidx`. Pushes the current state onto the history first
+    so the revert is itself revertable. Truncates history above the
+    chosen index.
+
+    History dance (example: history=[h0,h1,h2,h3], revert to h1):
+      1. Append h_now (previous_*=current active state) → [h0,h1,h2,h3,h_now]
+      2. Restore active state to h1.previous_*
+      3. Truncate → history[:1] + [h_now] = [h0, h_now]
+    After: active = h1's previous values; clicking revert on h_now
+    restores the pre-revert state. h1/h2/h3 are discarded (superseded).
+    """
+    from datetime import datetime, timezone
+    from core.recording import HistoryEntry
+
+    if step.element is None or not step.element.fingerprint_history:
+        return
+    history = step.element.fingerprint_history
+    if not (0 <= target_hidx < len(history)):
+        return
+    target = history[target_hidx]
+    now = datetime.now(timezone.utc).isoformat()
+    # 1. Push current state onto history so the revert is itself revertable.
+    history.append(HistoryEntry(
+        timestamp=now,
+        run_id="<revert>",
+        source="manual_edit",
+        confidence=None,
+        previous_primary_locator=dict(step.element.primary_locator),
+        previous_fallback_locators=[dict(x) for x in step.element.fallback_locators],
+        previous_attributes=dict(step.element.attributes),
+    ))
+    # 2. Restore the chosen previous state.
+    step.element.primary_locator = dict(target.previous_primary_locator)
+    step.element.fallback_locators = [dict(x) for x in target.previous_fallback_locators]
+    step.element.attributes = dict(target.previous_attributes)
+    # 3. Truncate: keep entries older than target, plus the just-appended entry.
+    step.element.fingerprint_history = history[:target_hidx] + [history[-1]]
