@@ -859,10 +859,13 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
         st.session_state.pop(f"_replay_target_{sc.id}", None)
         return
 
+    force_runner_up = st.session_state.pop(f"_force_runner_up_{sc.id}", None)
+
     cache_key = f"_replay_outcome_{sc.id}"
     sig = (recording_id,
            tuple(sorted((overrides or {}).items())),
-           label or "")
+           label or "",
+           tuple(sorted((force_runner_up or {}).items())))
     cached = st.session_state.get(cache_key)
     if cached is not None and cached.get("sig") == sig:
         recording = cached["recording"]
@@ -894,6 +897,7 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
                     headless=headless,
                     screenshot_dir=work_dir,
                     recording_path=side_path,
+                    force_runner_up=force_runner_up,
                 ),
             )
 
@@ -918,6 +922,47 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
             f"Replay failed at step {outcome.failed_step_index} after "
             f"{outcome.completed_steps} successful step(s){healed_suffix}: {outcome.error}"
         )
+        # Identify heals that fired in the steps BEFORE the failure
+        upstream_heals = []
+        for sr in outcome.step_results:
+            if sr.get("step_index", -1) >= (outcome.failed_step_index or 0):
+                break
+            if sr.get("healed"):
+                upstream_heals.append(sr)
+        if upstream_heals:
+            st.warning(
+                f"**{len(upstream_heals)} heal"
+                f"{'' if len(upstream_heals) == 1 else 's'} "
+                f"happened before this failure. Could one of them be wrong?**"
+            )
+            for sr in upstream_heals:
+                heal = sr["healed"]
+                old = heal.get("old_primary_locator") or {}
+                new = heal.get("new_primary_locator") or {}
+                candidates = heal.get("top_k_candidates") or []
+                # The chosen heal is candidates[0]; offer retry with each of [1:]
+                runners = candidates[1:3] if len(candidates) > 1 else []
+                with st.container(border=True):
+                    st.markdown(
+                        f"**Step {sr['step_index']}** healed "
+                        f"`{old.get('strategy')}:{old.get('value')}` → "
+                        f"`{new.get('strategy')}:{new.get('value')}`  \n"
+                        f":gray[confidence {heal.get('confidence', 0):.0%}]"
+                    )
+                    for idx, runner in enumerate(runners, start=1):
+                        rl = runner.get("primary_locator", {})
+                        rkey = f"retry_{sc.id}_{recording.id}_{sr['step_index']}_{idx}"
+                        if st.button(
+                            f"↻ Retry with `{rl.get('strategy')}:{rl.get('value')}` "
+                            f"(score {runner.get('score', 0):.0%})",
+                            key=rkey,
+                        ):
+                            fp_id = heal.get("fingerprint_id") or ""
+                            st.session_state[f"_replay_overrides_{sc.id}"] = overrides
+                            st.session_state[f"_force_runner_up_{sc.id}"] = {fp_id: idx}
+                            st.session_state[f"_replay_target_{sc.id}"] = recording.id
+                            st.session_state.pop(f"_replay_outcome_{sc.id}", None)
+                            st.rerun()
     else:
         st.success(
             f"Replay completed all {outcome.completed_steps} steps{healed_suffix}. "

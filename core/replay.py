@@ -446,6 +446,16 @@ async def replay_recording(
                                 "new_fallback_locators": [dict(x) for x in (d.new_fallback_locators or [])],
                                 "candidate_attrs": dict((d.matched_candidate.attributes if d.matched_candidate else {})),
                                 "diagnostics": d.diagnostics,
+                                "fingerprint_id": step.element.id if step.element else "",
+                                "top_k_candidates": [
+                                    {
+                                        "primary_locator": dict(c.primary_locator),
+                                        "fallback_locators": [dict(x) for x in c.fallback_locators],
+                                        "attributes": dict(c.attributes),
+                                        "score": float(c.score),
+                                    }
+                                    for c in (d.top_k_candidates or [])
+                                ],
                             }
                             outcome.healed_steps += 1
                 except Exception as e:
