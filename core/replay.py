@@ -258,6 +258,73 @@ def _promote_heals_to_recording(
     return summaries
 
 
+def _revert_last_heal_in_recording(
+    recording_path: str,
+    *,
+    fingerprint_id: str,
+) -> bool:
+    """Pop the most recent history entry for the matching fingerprint and
+    restore its previous state. The current state is pushed into history
+    first so revert is itself revertable. Returns True on success."""
+    from datetime import datetime, timezone
+    from core.recording import HistoryEntry, load_recording, save_recording
+
+    rec = load_recording(recording_path)
+    for step in rec.steps:
+        fp = step.element
+        if fp is None or fp.id != fingerprint_id:
+            continue
+        if not fp.fingerprint_history:
+            return False
+        prev = fp.fingerprint_history.pop()
+        # Push current state into history so revert is revertable
+        now = datetime.now(timezone.utc).isoformat()
+        fp.fingerprint_history.append(HistoryEntry(
+            timestamp=now,
+            run_id="<revert>",
+            source="heal",
+            confidence=prev.confidence,
+            previous_primary_locator=dict(fp.primary_locator),
+            previous_fallback_locators=[dict(x) for x in fp.fallback_locators],
+            previous_attributes=dict(fp.attributes),
+        ))
+        # Restore previous state
+        fp.primary_locator = dict(prev.previous_primary_locator)
+        fp.fallback_locators = [dict(x) for x in prev.previous_fallback_locators]
+        fp.attributes = dict(prev.previous_attributes)
+        save_recording(recording_path, rec)
+        return True
+    return False
+
+
+def _revert_last_heal(*, scenario, recording_id: str, fingerprint_id: str) -> bool:
+    """Apply _revert_last_heal_in_recording against a sidecar then merge
+    the result into the scenario's recordings list. Returns True on success."""
+    import os
+    from core.recording import Recording, save_recording, load_recording
+    from core.scenarios import save_scenario
+
+    rec_dict = next(
+        (r for r in scenario.recordings if r.get("id") == recording_id), None,
+    )
+    if rec_dict is None:
+        return False
+    work = os.path.join("data/replay_runs", recording_id)
+    os.makedirs(work, exist_ok=True)
+    side = os.path.join(work, "_revert_recording.yaml")
+    save_recording(side, Recording.from_dict(rec_dict))
+    ok = _revert_last_heal_in_recording(side, fingerprint_id=fingerprint_id)
+    if not ok:
+        return False
+    reloaded = load_recording(side)
+    for i, r in enumerate(scenario.recordings):
+        if r.get("id") == recording_id:
+            scenario.recordings[i] = reloaded.to_dict()
+            break
+    save_scenario("data/scenarios", scenario)
+    return True
+
+
 def _prune_replay_runs(recording_dir: str, keep: int = 5) -> None:
     """Keep only the most recent `keep` run subdirectories under recording_dir.
 

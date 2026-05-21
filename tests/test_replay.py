@@ -232,3 +232,52 @@ def test_promote_heals_to_recording_appends_history_and_updates_locator(tmp_path
     assert h.previous_primary_locator == {"strategy": "id", "value": "phone"}
     assert h.previous_attributes == old_attrs
     assert reloaded.healed_at  # ISO timestamp set
+
+
+def test_revert_last_heal_restores_previous_locator(tmp_path):
+    from core.recording import (
+        ElementFingerprint, Step, Recording, HistoryEntry,
+        save_recording, load_recording,
+    )
+    from core.replay import _revert_last_heal_in_recording
+
+    rec = Recording(
+        id="r1", name="t", kind="scenario", application_id="a1",
+        created_at="2026-05-21", start_url="http://x",
+        steps=[Step(
+            index=0, action="fill", value="x",
+            element=ElementFingerprint(
+                id="el-phone",
+                primary_locator={"strategy": "id", "value": "phone_number"},
+                fallback_locators=[],
+                attributes={"id": "phone_number"},
+                page_context={},
+                fingerprint_history=[
+                    HistoryEntry(
+                        timestamp="2026-05-21T10:00:00Z",
+                        run_id="run-abc",
+                        source="heal",
+                        confidence=0.91,
+                        previous_primary_locator={"strategy": "id", "value": "phone"},
+                        previous_fallback_locators=[],
+                        previous_attributes={"id": "phone"},
+                    ),
+                ],
+            ),
+        )],
+    )
+    path = tmp_path / "rec.yaml"
+    save_recording(str(path), rec)
+
+    _revert_last_heal_in_recording(str(path), fingerprint_id="el-phone")
+
+    reloaded = load_recording(str(path))
+    fp = reloaded.steps[0].element
+    assert fp.primary_locator == {"strategy": "id", "value": "phone"}
+    assert fp.attributes == {"id": "phone"}
+    # The revert itself becomes a history entry (so revert is revertable):
+    assert len(fp.fingerprint_history) == 1
+    assert fp.fingerprint_history[0].source == "heal"
+    assert fp.fingerprint_history[0].previous_primary_locator == {
+        "strategy": "id", "value": "phone_number",
+    }
