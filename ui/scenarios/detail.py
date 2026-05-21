@@ -969,6 +969,20 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
             f"Replay completed all {outcome.completed_steps} steps{healed_suffix}. "
             f"Final URL: {outcome.final_url}"
         )
+        if outcome.skipped_steps:
+            n = len(outcome.skipped_steps)
+            st.warning(
+                f"⏭ **{n} step{'' if n == 1 else 's'} skipped because the "
+                f"target field appears to have been removed from the page.** "
+                f"The scenario completed without them."
+            )
+            with st.expander(f"View {n} skipped step{'' if n == 1 else 's'}"):
+                for sk in outcome.skipped_steps:
+                    st.markdown(
+                        f"- **Step {sk['step_index']}** (`{sk['action']}`) — "
+                        f"field `{sk['field_label'] or '(unnamed)'}` not found  \n"
+                        f"  :gray[{sk['diagnostics']}]"
+                    )
         if outcome.promoted_heals:
             n = len(outcome.promoted_heals)
             st.info(
@@ -1073,7 +1087,12 @@ def _render_step_report(outcome, recording) -> None:
         if healed and status == "passed":
             icon = "🩹"
         else:
-            icon = {"passed": "✅", "failed": "❌", "skipped": "⏭"}.get(status, "•")
+            icon = {
+                "passed": "✅",
+                "failed": "❌",
+                "skipped": "⏭",
+                "skipped_removed": "⏭",
+            }.get(status, "•")
         label_parts = [f"Step {r['step_index']}", r.get("action", "")]
         if step is not None and step.element is not None:
             attrs = step.element.attributes or {}
@@ -1085,8 +1104,13 @@ def _render_step_report(outcome, recording) -> None:
                 label_parts.append(field)
         if healed and status == "passed":
             label_parts.append(f"healed · {healed['confidence']:.0%}")
+        if status == "skipped_removed":
+            label_parts.append("field removed — skipped")
         header = f"{icon} " + " · ".join(p for p in label_parts if p)
-        with st.expander(header, expanded=(status == "failed" or bool(healed))):
+        with st.expander(
+            header,
+            expanded=(status in ("failed", "skipped_removed") or bool(healed)),
+        ):
             if r.get("value") not in (None, ""):
                 st.caption(f"value: `{r['value']}`")
             if healed and status == "passed":
@@ -1095,6 +1119,13 @@ def _render_step_report(outcome, recording) -> None:
                 st.error(r["error"])
                 if r.get("heal_diagnostics"):
                     st.caption(f"healer: {r['heal_diagnostics']}")
+            if status == "skipped_removed" and r.get("removal_diagnostics"):
+                st.info(
+                    "**Field appears removed from the live page.** This step "
+                    "was safely skipped because it's not required to complete "
+                    "the scenario."
+                )
+                st.caption(f"healer: {r['removal_diagnostics']}")
             shot = r.get("screenshot_path")
             if shot and os.path.exists(shot):
                 st.image(shot, use_container_width=True)
