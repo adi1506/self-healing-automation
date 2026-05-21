@@ -119,3 +119,32 @@ async def test_enter_key_submit_still_emits_submit(sample_form_url):
         actions = [c["action"] for c in captured]
         assert "submit" in actions
         await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_scan_required_fields_detects_html_required_and_aria_required(tmp_path):
+    """Smoke test: a form with one HTML-required field, one aria-required
+    field, one optional field. scanRequiredFields returns the two required
+    ones."""
+    from playwright.async_api import async_playwright
+    from core.capture import load_inject_js
+
+    html = """<!doctype html><html><body><form>
+        <input id="a" name="a" required>
+        <input id="b" name="b" aria-required="true">
+        <input id="c" name="c">
+    </form></body></html>"""
+    page_path = tmp_path / "f.html"
+    page_path.write_text(html, encoding="utf-8")
+
+    async with async_playwright() as p:
+        b = await p.chromium.launch(headless=True)
+        ctx = await b.new_context()
+        await ctx.add_init_script(load_inject_js())
+        page = await ctx.new_page()
+        await page.goto("file://" + str(page_path).replace("\\", "/"))
+        required = await page.evaluate("window.__sha.scanRequiredFields()")
+        await b.close()
+
+    ids = sorted([fp["attributes"]["id"] for fp in required])
+    assert ids == ["a", "b"]

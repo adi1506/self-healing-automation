@@ -145,6 +145,7 @@
       class: el.getAttribute("class") || "",
       placeholder: el.getAttribute("placeholder") || "",
       aria_label: el.getAttribute("aria-label") || "",
+      aria_required: el.getAttribute("aria-required") || "",
       role: el.getAttribute("role") || "",
       text_content: (el.textContent || "").trim().slice(0, 80),
       nearest_label_text: nearestLabelText(el),
@@ -280,6 +281,74 @@
     return out;
   }
 
+  function isFieldRequired(el) {
+    if (el.hasAttribute("required")) return true;
+    if ((el.getAttribute("aria-required") || "").toLowerCase() === "true") return true;
+    // Check for asterisk in nearest label
+    const labelText = nearestLabelText(el);
+    if (labelText && labelText.includes("*")) return true;
+    // Class-name heuristic on the field or its container
+    const className = (el.className || "") + " " +
+      (el.closest(".form-group, .field, .form-field")?.className || "");
+    if (/\b(required|mandatory|is-required)\b/i.test(className)) return true;
+    // data-* attribute hints
+    for (const attr of el.attributes) {
+      if (/^data-/i.test(attr.name) && /required|mandatory|validation/i.test(attr.name + " " + attr.value)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function scanRequiredFields() {
+    const selector = "input, select, textarea, [role=textbox], [role=combobox], [role=checkbox], [role=radio]";
+    const out = [];
+    document.querySelectorAll(selector).forEach(el => {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return; // invisible
+      if (el.disabled) return;
+      if (!isFieldRequired(el)) return;
+      const fp = buildFingerprint(el);
+      if (!fp) return;
+      fp.is_empty = (el.value || "").trim() === "" &&
+        !(el.tagName === "SELECT" && el.selectedIndex > 0) &&
+        !(el.type === "checkbox" && el.checked);
+      out.push(fp);
+    });
+    return out;
+  }
+
+  function scanPostSubmitErrors() {
+    const errorSelectors = [
+      "[role=alert]",
+      "[aria-invalid=true]",
+      ".error-message", ".field-error", ".form-error",
+      "[id$='-error']", "[class*='error']", "[class*='invalid']",
+    ];
+    const errMsgRe = /required|mandatory|cannot be (empty|blank)|please (enter|select|fill|provide)/i;
+    const out = [];
+    document.querySelectorAll(errorSelectors.join(",")).forEach(el => {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return;
+      const text = (el.textContent || "").trim();
+      if (!text) return;
+      if (!errMsgRe.test(text)) return;
+      // Try to associate with a field via aria-describedby / for / proximity
+      let assoc = null;
+      if (el.id) {
+        assoc = document.querySelector(`[aria-describedby~='${el.id}']`);
+      }
+      if (!assoc && el.previousElementSibling && /^(input|select|textarea)$/i.test(el.previousElementSibling.tagName)) {
+        assoc = el.previousElementSibling;
+      }
+      out.push({
+        error_text: text,
+        associated_field: assoc ? buildFingerprint(assoc) : null,
+      });
+    });
+    return out;
+  }
+
   window.__sha = {
     _sigToId: new Map(),
     _attached: false,
@@ -289,6 +358,8 @@
     buildFingerprint,
     attachListeners,
     scanAll,
+    scanRequiredFields,
+    scanPostSubmitErrors,
   };
 
   // Auto-attach once the DOM is ready. Python can also call
