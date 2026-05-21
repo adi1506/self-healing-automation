@@ -174,3 +174,61 @@ async def test_replay_recording_reports_failed_step(sample_form_url):
     outcome = await replay_recording(recording, headless=True, element_timeout_ms=0)
     assert outcome.failed_step_index == 0
     assert outcome.error is not None
+
+
+def test_promote_heals_to_recording_appends_history_and_updates_locator(tmp_path):
+    from core.recording import (
+        ElementFingerprint, Step, Recording, save_recording, load_recording,
+    )
+    from core.replay import _promote_heals_to_recording
+    from core.replay_healer import HealDecision, CandidateRef
+
+    old_attrs = {"id": "phone", "name": "phone"}
+    rec = Recording(
+        id="r1", name="t", kind="scenario", application_id="a1",
+        created_at="2026-05-21", start_url="http://x",
+        steps=[Step(
+            index=0, action="fill", value="555",
+            element=ElementFingerprint(
+                id="el-phone",
+                primary_locator={"strategy": "id", "value": "phone"},
+                fallback_locators=[{"strategy": "name", "value": "phone"}],
+                attributes=old_attrs,
+                page_context={},
+            ),
+        )],
+    )
+    path = tmp_path / "rec.yaml"
+    save_recording(str(path), rec)
+
+    new_primary = {"strategy": "id", "value": "phone_number"}
+    decision = HealDecision(
+        method="auto", confidence=0.91,
+        new_primary_locator=new_primary,
+        new_fallback_locators=[],
+        top_k_candidates=[CandidateRef(
+            primary_locator=new_primary,
+            fallback_locators=[],
+            attributes={"id": "phone_number", "name": "phone_number"},
+            score=0.91,
+        )],
+    )
+
+    _promote_heals_to_recording(
+        str(path),
+        promoted={"el-phone": decision},
+        run_id="run-xyz",
+    )
+
+    reloaded = load_recording(str(path))
+    fp = reloaded.steps[0].element
+    assert fp.primary_locator == new_primary
+    assert fp.attributes == {"id": "phone_number", "name": "phone_number"}
+    assert len(fp.fingerprint_history) == 1
+    h = fp.fingerprint_history[0]
+    assert h.source == "heal"
+    assert h.run_id == "run-xyz"
+    assert h.confidence == 0.91
+    assert h.previous_primary_locator == {"strategy": "id", "value": "phone"}
+    assert h.previous_attributes == old_attrs
+    assert reloaded.healed_at  # ISO timestamp set

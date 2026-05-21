@@ -192,6 +192,69 @@ class ReplayOutcome:
     final_url: str = ""
     step_results: list[dict] = field(default_factory=list)
     run_dir: Optional[str] = None
+    promoted_heals: list[dict] = field(default_factory=list)  # one entry per heal written back
+    run_id: str = ""
+
+
+def _promote_heals_to_recording(
+    recording_path: str,
+    *,
+    promoted: dict[str, "HealDecision"],
+    run_id: str,
+) -> list[dict]:
+    """Apply heals to a recording on disk. For each fingerprint id in
+    `promoted`, push the current fingerprint into history and replace it
+    with the healed primary locator + candidate attributes.
+
+    Returns a list of summary dicts (one per applied heal) for the run
+    report. Pruning: history is capped at 10 entries per fingerprint.
+    """
+    from datetime import datetime, timezone
+    from core.recording import HistoryEntry, load_recording, save_recording
+
+    rec = load_recording(recording_path)
+    now = datetime.now(timezone.utc).isoformat()
+    summaries: list[dict] = []
+    HISTORY_CAP = 10
+
+    for step in rec.steps:
+        if step.element is None:
+            continue
+        decision = promoted.get(step.element.id)
+        if decision is None:
+            continue
+        fp = step.element
+        # Push current state into history
+        entry = HistoryEntry(
+            timestamp=now,
+            run_id=run_id,
+            source="heal",
+            confidence=float(decision.confidence),
+            previous_primary_locator=dict(fp.primary_locator),
+            previous_fallback_locators=[dict(x) for x in fp.fallback_locators],
+            previous_attributes=dict(fp.attributes),
+        )
+        fp.fingerprint_history.append(entry)
+        if len(fp.fingerprint_history) > HISTORY_CAP:
+            fp.fingerprint_history = fp.fingerprint_history[-HISTORY_CAP:]
+        # Replace active locator + attributes
+        old_primary = dict(fp.primary_locator)
+        fp.primary_locator = dict(decision.new_primary_locator or fp.primary_locator)
+        fp.fallback_locators = [dict(x) for x in (decision.new_fallback_locators or [])]
+        if decision.top_k_candidates:
+            fp.attributes = dict(decision.top_k_candidates[0].attributes)
+        summaries.append({
+            "fingerprint_id": fp.id,
+            "step_index": step.index,
+            "old_primary_locator": old_primary,
+            "new_primary_locator": dict(fp.primary_locator),
+            "confidence": float(decision.confidence),
+            "method": decision.method,
+        })
+
+    rec.healed_at = now
+    save_recording(recording_path, rec)
+    return summaries
 
 
 def _prune_replay_runs(recording_dir: str, keep: int = 5) -> None:
