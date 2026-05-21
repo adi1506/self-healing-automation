@@ -6,6 +6,38 @@ import yaml
 
 
 @dataclass
+class HistoryEntry:
+    """Records a system-made change to an ElementFingerprint.
+
+    Used for revertable heal promotions (§3.1 of the design). Manual edits
+    do not record history — they overwrite. `source` distinguishes heal-
+    driven changes from auto-insertions and (future) manual entries.
+    """
+    timestamp: str
+    run_id: str
+    source: str                              # "heal" | "auto_insert" | "manual_edit"
+    previous_primary_locator: dict
+    previous_fallback_locators: list[dict]
+    previous_attributes: dict
+    confidence: Optional[float] = None       # heal confidence, None for non-heal sources
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "HistoryEntry":
+        return cls(
+            timestamp=d.get("timestamp", ""),
+            run_id=d.get("run_id", ""),
+            source=d.get("source", ""),
+            previous_primary_locator=dict(d.get("previous_primary_locator", {})),
+            previous_fallback_locators=[dict(x) for x in d.get("previous_fallback_locators", [])],
+            previous_attributes=dict(d.get("previous_attributes", {})),
+            confidence=d.get("confidence"),
+        )
+
+
+@dataclass
 class ElementFingerprint:
     """A multi-attribute fingerprint for one recorded element.
 
@@ -20,18 +52,24 @@ class ElementFingerprint:
     fallback_locators: list[dict]
     attributes: dict
     page_context: dict
+    fingerprint_history: list[HistoryEntry] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # asdict recurses into HistoryEntry list — already dict form
+        return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> ElementFingerprint:
+    def from_dict(cls, d: dict) -> "ElementFingerprint":
         return cls(
             id=d["id"],
             primary_locator=dict(d["primary_locator"]),
             fallback_locators=[dict(x) for x in d.get("fallback_locators", [])],
             attributes=dict(d.get("attributes", {})),
             page_context=dict(d.get("page_context", {})),
+            fingerprint_history=[
+                HistoryEntry.from_dict(h) for h in d.get("fingerprint_history", [])
+            ],
         )
 
 

@@ -107,3 +107,61 @@ def test_login_recording_with_success_signal():
     )
     assert rec.kind == "login"
     assert rec.success_signal.url_pattern == "/dashboard"
+
+
+def test_fingerprint_history_serializes_round_trip():
+    from core.recording import ElementFingerprint, HistoryEntry
+    fp = ElementFingerprint(
+        id="el-1",
+        primary_locator={"strategy": "id", "value": "phone"},
+        fallback_locators=[],
+        attributes={},
+        page_context={},
+        fingerprint_history=[
+            HistoryEntry(
+                timestamp="2026-05-21T10:00:00Z",
+                run_id="run-abc",
+                source="heal",
+                confidence=0.91,
+                previous_primary_locator={"strategy": "id", "value": "phone_legacy"},
+                previous_fallback_locators=[],
+                previous_attributes={"id": "phone_legacy"},
+            ),
+        ],
+    )
+    d = fp.to_dict()
+    assert d["fingerprint_history"][0]["run_id"] == "run-abc"
+    restored = ElementFingerprint.from_dict(d)
+    assert len(restored.fingerprint_history) == 1
+    assert restored.fingerprint_history[0].confidence == 0.91
+
+
+def test_fingerprint_history_missing_in_old_recording_defaults_empty():
+    from core.recording import ElementFingerprint
+    d = {
+        "id": "el-1",
+        "primary_locator": {"strategy": "id", "value": "phone"},
+        "fallback_locators": [],
+        "attributes": {},
+        "page_context": {},
+        # no fingerprint_history key — simulates older recording
+    }
+    fp = ElementFingerprint.from_dict(d)
+    assert fp.fingerprint_history == []
+
+
+def test_fingerprint_history_confidence_none_round_trips():
+    from core.recording import ElementFingerprint, HistoryEntry
+    entry = HistoryEntry(
+        timestamp="2026-05-21T10:00:00Z", run_id="run-xyz", source="auto_insert",
+        previous_primary_locator={}, previous_fallback_locators=[], previous_attributes={},
+        confidence=None,
+    )
+    fp = ElementFingerprint(
+        id="el-1", primary_locator={"strategy": "id", "value": "x"},
+        fallback_locators=[], attributes={}, page_context={},
+        fingerprint_history=[entry],
+    )
+    restored = ElementFingerprint.from_dict(fp.to_dict())
+    assert restored.fingerprint_history[0].confidence is None
+    assert restored.fingerprint_history[0].source == "auto_insert"
