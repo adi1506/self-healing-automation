@@ -868,11 +868,23 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
         recording = cached["recording"]
         outcome = cached["outcome"]
     else:
+        from core.recording import save_recording, load_recording
+        from core.scenarios import save_scenario
+
         recording = Recording.from_dict(rec_dict)
         state = load_storage_state("data/storage_states", sc.application_id)
         raw = os.environ.get("SCANNER_HEADLESS", "")
         headless = raw.strip().lower() in ("1", "true", "yes", "on")
         title = label or recording.name
+
+        # Side-write the recording to a temp file the replay can promote into.
+        # After replay, we'll merge the (possibly-updated) recording back into
+        # the scenario's recordings list.
+        work_dir = os.path.join("data/replay_runs", recording.id)
+        os.makedirs(work_dir, exist_ok=True)
+        side_path = os.path.join(work_dir, "_live_recording.yaml")
+        save_recording(side_path, recording)
+
         with st.spinner(f"Replaying {title}…"):
             outcome = _run_async(
                 replay_recording(
@@ -880,11 +892,21 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
                     data_overrides=overrides,
                     storage_state=state,
                     headless=headless,
-                    screenshot_dir=os.path.join(
-                        "data/replay_runs", recording.id,
-                    ),
+                    screenshot_dir=work_dir,
+                    recording_path=side_path,
                 ),
             )
+
+        # If heals were promoted, reload the side-recording and merge it back
+        # into the scenario's `recordings` list, then persist the scenario.
+        if outcome.promoted_heals:
+            promoted_rec = load_recording(side_path)
+            for i, rdict in enumerate(sc.recordings):
+                if rdict.get("id") == recording_id:
+                    sc.recordings[i] = promoted_rec.to_dict()
+                    save_scenario("data/scenarios", sc)
+                    break
+
         st.session_state[cache_key] = {
             "sig": sig, "recording": recording, "outcome": outcome,
         }
