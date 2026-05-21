@@ -244,3 +244,43 @@ Items 1-5 are the MVP. 6-7 make it usable long-term. 8-9 are quality and reach.
 - **Integration test** using `test_form/sample_form.html` (v1 schema) and `test_form/v2_id_changes.html` (v2 schema): record on v1, replay on v2, assert all steps either pass or heal, no unrelated failures.
 - **Negative integration test**: a `v2_field_removed.html` variant — assert the removed field's step fails with `ElementNotFound: no candidate above floor`, not a wrong heal.
 - **Ambiguity test**: two "Phone Number" fields in different sections — assert section-scope filter routes the heal to the correct one.
+
+## 10. Removed-Field Handling
+
+When the healer's scan returns a top score below `REMOVED_FLOOR` (0.40) AND
+no candidate shares the stored fingerprint's `autocomplete` or non-generic
+`name` value (the rename-guard), the field is classified as `field_removed`
+rather than `unresolved`.
+
+The replay loop treats `field_removed` step failures differently based on
+the step's role:
+
+- **Skippable steps** (optional fills, optional toggles, required fills
+  with no recorded value) → recorded in `ReplayOutcome.skipped_steps`,
+  step status set to `skipped_removed`, loop continues
+- **Blocker steps** (click, submit, navigate, press, required fills with
+  a recorded value, required toggles) → fail the run, surface "Add step
+  manually" CTA in the UI
+
+The 0.40–0.55 score band remains "unresolved" — that's the gray zone where
+we have *something* on the page but not confident enough to commit a heal.
+Skipping in that band would risk silently producing wrong behavior.
+
+### Rename-guard rationale
+
+A drastic rename (label, id, name all changed) can produce a top-candidate
+score below 0.40 even though the field still exists. Two attributes survive
+most renames:
+
+- `autocomplete` — browser-defined vocabulary (`tel`, `email`, `new-password`,
+  ...). Devs rarely change these because they break browser autofill.
+- Non-generic `name` — the form-submission name. Often stable across UI
+  redesigns because the backend depends on it.
+
+If either matches a live candidate exactly, the field is renamed, not
+removed, and we fail-safe with `unresolved`.
+
+### Explicitly out of scope
+
+Detecting fields that moved to a different page or step. We treat moved
+fields as removed (the user will manually re-record on the new page).
