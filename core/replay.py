@@ -62,6 +62,42 @@ def _locator_for(page: Page, locator: dict) -> Locator:
     raise ValueError(f"unknown locator strategy: {strategy!r}")
 
 
+def _is_step_skippable(step: Step) -> bool:
+    """Decide whether a missing-element failure on this step is safe to skip.
+
+    Rule:
+      - click/submit/navigate/wait/press -> never skippable (flow-advancing)
+      - select/check/uncheck on a required field -> blocker
+      - select/check/uncheck on an optional field -> skippable
+      - fill on an optional field -> skippable
+      - fill on a required field with an empty/None recorded value -> skippable
+        (recorder had nothing to fill anyway — the field's been deleted on a
+        page that didn't actually need it)
+      - fill on a required field with a real value -> blocker
+
+    Steps with no element (navigate, wait) never reach the heal path —
+    return False defensively so the caller can't accidentally skip them.
+    """
+    if step.element is None:
+        return False
+    if step.action in ("click", "submit", "navigate", "wait", "press"):
+        return False
+
+    constraints = step.element.attributes.get("html5_constraints") or {}
+    is_required = bool(constraints.get("required"))
+
+    if step.action == "fill":
+        if not is_required:
+            return True
+        # Required field but recorder didn't fill it — safe to skip
+        return not (step.value or "").strip()
+
+    if step.action in ("select", "check", "uncheck"):
+        return not is_required
+
+    return False
+
+
 async def find_element_by_fingerprint(
     page: Page,
     fp: ElementFingerprint,
