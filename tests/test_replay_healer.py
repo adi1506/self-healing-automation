@@ -302,3 +302,44 @@ def test_heal_decision_preserves_top_k_candidates():
     # Scores must be in descending order
     scores = [c.score for c in decision.top_k_candidates]
     assert scores == sorted(scores, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_attempt_heal_honours_force_candidate_index(monkeypatch):
+    """When `force_candidate_index=1` is provided, attempt_heal returns the
+    runner-up rather than the top scorer."""
+    from core.replay_healer import attempt_heal
+
+    stored = _fp(name="phone", nearest_label_text="Phone", autocomplete="tel")
+
+    top = _fp(name="phone_number", nearest_label_text="Phone", autocomplete="tel")
+    runner = _fp(name="mobile", nearest_label_text="Mobile", autocomplete="tel")
+
+    class FakePage:
+        url = "https://example.com/form"
+        async def evaluate(self, *a, **kw):
+            return [
+                {
+                    "id": "el-1",
+                    "primary_locator": {"strategy": "name", "value": "phone_number"},
+                    "fallback_locators": [],
+                    "attributes": top.attributes,
+                    "page_context": {"url": "https://example.com/form", "section_label": ""},
+                },
+                {
+                    "id": "el-2",
+                    "primary_locator": {"strategy": "name", "value": "mobile"},
+                    "fallback_locators": [],
+                    "attributes": runner.attributes,
+                    "page_context": {"url": "https://example.com/form", "section_label": ""},
+                },
+            ]
+
+    page = FakePage()
+    # Without override → returns top scorer
+    d1 = await attempt_heal(page, stored, action="fill")
+    assert d1.new_primary_locator["value"] == "phone_number"
+
+    # With override → returns runner-up
+    d2 = await attempt_heal(page, stored, action="fill", force_candidate_index=1)
+    assert d2.new_primary_locator["value"] == "mobile"

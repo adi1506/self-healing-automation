@@ -433,6 +433,7 @@ async def attempt_heal(
     score_threshold: float = SCORE_THRESHOLD,
     gray_low: float = GRAY_LOW,
     margin_req: float = MARGIN_REQ,
+    force_candidate_index: int | None = None,
 ) -> HealDecision:
     """Scan the live page and attempt a heal for `stored`.
 
@@ -468,7 +469,7 @@ async def attempt_heal(
     if not candidates:
         return HealDecision.unresolved(diagnostics="no interactive elements found on page")
 
-    return select_match(
+    decision = select_match(
         stored,
         candidates,
         action=action,
@@ -477,3 +478,27 @@ async def attempt_heal(
         gray_low=gray_low,
         margin_req=margin_req,
     )
+
+    # Caller has explicitly demanded a specific candidate (used by the
+    # runner-up retry path). Skip threshold/margin gating: the user has
+    # already opted into "try this one even if it scored lower."
+    if (
+        force_candidate_index is not None
+        and 0 <= force_candidate_index < len(decision.top_k_candidates)
+    ):
+        chosen = decision.top_k_candidates[force_candidate_index]
+        return HealDecision(
+            method="forced",
+            confidence=chosen.score,
+            runner_up_score=(
+                decision.top_k_candidates[1].score
+                if len(decision.top_k_candidates) > 1 else 0.0
+            ),
+            matched_by=[],   # not meaningful for a forced choice
+            new_primary_locator=dict(chosen.primary_locator),
+            new_fallback_locators=[dict(x) for x in chosen.fallback_locators],
+            top_k_candidates=list(decision.top_k_candidates),
+            diagnostics=f"forced candidate index {force_candidate_index}",
+        )
+
+    return decision
