@@ -849,7 +849,7 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
     (e.g. on the EC2 box where there's no display)."""
     from core.auth_session import load_storage_state
     from core.recording import Recording
-    from core.replay import replay_recording
+    from core.replay import replay_recording_with_auto_fill
 
     rec_dict = next(
         (r for r in sc.recordings if r.get("id") == recording_id), None,
@@ -890,7 +890,7 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
 
         with st.spinner(f"Replaying {title}…"):
             outcome = _run_async(
-                replay_recording(
+                replay_recording_with_auto_fill(
                     recording,
                     data_overrides=overrides,
                     storage_state=state,
@@ -996,6 +996,49 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
                         # Invalidate cached outcome so banner clears on rerun
                         st.session_state.pop(f"_replay_outcome_{sc.id}", None)
                         st.rerun()
+    if outcome.auto_filled_fields:
+        if outcome.failed_step_index is None:
+            # Auto-retry passed
+            st.info(
+                "**Submit was blocked by a new required field. We filled it "
+                "in automatically and the scenario completed.**"
+            )
+            for af in outcome.auto_filled_fields:
+                attrs = af["attributes"]
+                label = attrs.get("nearest_label_text") or attrs.get("id") or "(unnamed)"
+                st.markdown(
+                    f"- **`{label}`** (`{attrs.get('tag')}`) — AI suggested value: "
+                    f"`{af['value']}`"
+                )
+            cols = st.columns([2, 2, 6])
+            if cols[0].button("💾 Save these steps to the recording",
+                              key=f"save_n2_{sc.id}_{recording.id}",
+                              type="primary"):
+                from core.replay import _save_auto_filled_steps
+                insert_before = (outcome.original_failure or {}).get("failed_step_index", 0)
+                _save_auto_filled_steps(
+                    scenario=sc,
+                    recording_id=recording.id,
+                    auto_filled=outcome.auto_filled_fields,
+                    insert_before_step_index=insert_before,
+                )
+                st.success("Saved.")
+                st.session_state.pop(f"_replay_outcome_{sc.id}", None)
+                st.rerun()
+            if cols[1].button("Discard", key=f"discard_n2_{sc.id}_{recording.id}"):
+                st.session_state.pop(f"_replay_outcome_{sc.id}", None)
+                st.rerun()
+        else:
+            # Auto-retry also failed
+            st.error(
+                "**A new required field was detected, but auto-filling it "
+                "didn't make the scenario pass. The failure may not be from "
+                "the missing field.**"
+            )
+            for af in outcome.auto_filled_fields:
+                attrs = af["attributes"]
+                label = attrs.get("nearest_label_text") or attrs.get("id") or "(unnamed)"
+                st.markdown(f"- We tried `{label}` = `{af['value']}` — no luck.")
     _render_step_report(outcome, recording)
     btn_cols = st.columns([2, 2, 6])
     if btn_cols[0].button("↻ Run again", key=f"rerun_replay_{sc.id}"):

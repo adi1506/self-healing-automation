@@ -357,6 +357,50 @@ def _revert_last_heal(*, scenario, recording_id: str, fingerprint_id: str) -> bo
     return True
 
 
+def _save_auto_filled_steps(
+    *,
+    scenario,
+    recording_id: str,
+    auto_filled: list[dict],
+    insert_before_step_index: int,
+) -> None:
+    """Insert AI-suggested fill steps into the recording on the scenario,
+    persist the scenario. Each inserted step is marked inserted_by='auto-heal'."""
+    from core.recording import Recording, Step, ElementFingerprint
+    from core.scenarios import save_scenario
+
+    rec_dict = next(
+        (r for r in scenario.recordings if r.get("id") == recording_id), None,
+    )
+    if rec_dict is None:
+        return
+    rec = Recording.from_dict(rec_dict)
+    insert_at = max(0, insert_before_step_index)
+    for af in auto_filled:
+        new_step = Step(
+            index=0,  # rewritten below
+            action="fill",
+            value=af["value"],
+            element=ElementFingerprint(
+                id=af["fingerprint_id"],
+                primary_locator=af.get("primary_locator") or {},
+                fallback_locators=af.get("fallback_locators") or [],
+                attributes=af.get("attributes") or {},
+                page_context={},
+            ),
+            inserted_by="auto-heal",
+        )
+        rec.steps.insert(insert_at, new_step)
+        insert_at += 1
+    for i, s in enumerate(rec.steps):
+        s.index = i
+    for i, r in enumerate(scenario.recordings):
+        if r.get("id") == recording_id:
+            scenario.recordings[i] = rec.to_dict()
+            break
+    save_scenario("data/scenarios", scenario)
+
+
 def _prune_replay_runs(recording_dir: str, keep: int = 5) -> None:
     """Keep only the most recent `keep` run subdirectories under recording_dir.
 
