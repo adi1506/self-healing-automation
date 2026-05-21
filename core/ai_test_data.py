@@ -104,3 +104,82 @@ class AITestData:
                     except (TypeError, ValueError):
                         pass
         return ""
+
+
+# ---------------------------------------------------------------------------
+# Module-level helper — used by replay's new-required-field auto-fill path
+# ---------------------------------------------------------------------------
+
+def value_for_field(attrs: dict) -> str:
+    """Generate a single reasonable test value for one field given its
+    captured fingerprint attributes. Used by replay's new-required-field
+    handler when a form drift adds a required field not in the recording.
+
+    Tries the LLM via AITestData.generate_value; falls back to a heuristic
+    by autocomplete / type hints if AI is unavailable or returns nothing.
+    Always returns a non-empty string.
+    """
+    field = {
+        "element_name": attrs.get("nearest_label_text") or attrs.get("id") or attrs.get("name") or "field",
+        "element_type": _element_type_for(attrs),
+        "placeholder": attrs.get("placeholder", ""),
+        "locator_label": attrs.get("nearest_label_text", ""),
+        "autocomplete": attrs.get("autocomplete", ""),
+        "pattern": (attrs.get("html5_constraints") or {}).get("pattern", ""),
+        "maxlength": (attrs.get("html5_constraints") or {}).get("maxlength", ""),
+        "minlength": (attrs.get("html5_constraints") or {}).get("minlength", ""),
+        "min": (attrs.get("html5_constraints") or {}).get("min", ""),
+        "max": (attrs.get("html5_constraints") or {}).get("max", ""),
+    }
+
+    try:
+        ai = AITestData()
+        if ai.is_available():
+            val = ai.generate_value(field, page_context={})
+            if val:
+                return str(val)
+    except Exception:
+        pass  # Fall through to heuristic
+
+    return _heuristic_value(attrs)
+
+
+def _element_type_for(attrs: dict) -> str:
+    tag = (attrs.get("tag") or "").lower()
+    typ = (attrs.get("type") or "").lower()
+    if tag == "select":
+        return "select"
+    if tag == "textarea":
+        return "textarea"
+    if tag == "input":
+        return f"input-{typ}" if typ else "input-text"
+    return tag or "input-text"
+
+
+def _heuristic_value(attrs: dict) -> str:
+    ac = (attrs.get("autocomplete") or "").lower()
+    typ = (attrs.get("type") or "").lower()
+    label = (attrs.get("nearest_label_text") or "").lower()
+    ident = (attrs.get("id") or attrs.get("name") or "").lower()
+
+    if "email" in ac or "email" in typ or "email" in label or "email" in ident:
+        return "test@example.com"
+    if "tel" in ac or typ == "tel" or "phone" in label or "phone" in ident:
+        return "5555550100"
+    if "country" in ac or "country" in label or "country" in ident:
+        return "United States"
+    if "city" in ac or "city" in label or "city" in ident:
+        return "Springfield"
+    if "postal-code" in ac or "zip" in label or "zip" in ident:
+        return "12345"
+    if "given-name" in ac or "first" in label or "fname" in ident:
+        return "Alice"
+    if "family-name" in ac or "last" in label or "lname" in ident:
+        return "Smith"
+    if typ == "checkbox":
+        return "true"
+    if typ == "number":
+        return "1"
+    if typ == "date":
+        return "2026-01-01"
+    return "test"
