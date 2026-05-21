@@ -225,6 +225,8 @@ class ReplayOutcome:
     promoted_heals: list[dict] = field(default_factory=list)  # one entry per heal written back
     run_id: str = ""
     new_required_fields_detected: list[dict] = field(default_factory=list)
+    auto_filled_fields: list[dict] = field(default_factory=list)
+    original_failure: Optional[dict] = None
 
 
 def _promote_heals_to_recording(
@@ -569,3 +571,103 @@ async def replay_recording(
             outcome.error = f"heals not promoted: {e}"
 
     return outcome
+
+
+async def replay_recording_with_auto_fill(
+    recording: Recording,
+    *,
+    data_overrides: dict[str, str] | None = None,
+    storage_state: dict | None = None,
+    headless: bool = True,
+    screenshot_dir: str | None = None,
+    element_timeout_ms: int = 5000,
+    ai_matcher: object | None = None,
+    healing_enabled: bool = True,
+    recording_path: str | None = None,
+    promote_on_pass: bool = True,
+    force_runner_up: dict[str, int] | None = None,
+) -> ReplayOutcome:
+    """Wrap replay_recording with an auto-retry path: if the first attempt
+    fails and `new_required_fields_detected` is non-empty, AI-fill those
+    fields and re-run with them inserted before the failing submit step.
+    The outcome.auto_filled_fields list records what was filled so the UI
+    can offer 'Save this step.'"""
+    from copy import deepcopy
+    from core.ai_test_data import value_for_field
+
+    outcome = await replay_recording(
+        recording,
+        data_overrides=data_overrides,
+        storage_state=storage_state,
+        headless=headless,
+        screenshot_dir=screenshot_dir,
+        element_timeout_ms=element_timeout_ms,
+        ai_matcher=ai_matcher,
+        healing_enabled=healing_enabled,
+        recording_path=recording_path,
+        promote_on_pass=promote_on_pass,
+        force_runner_up=force_runner_up,
+    )
+    outcome.auto_filled_fields = []
+
+    if outcome.failed_step_index is None or not outcome.new_required_fields_detected:
+        # No retry needed — either it passed or the failure isn't a missing field.
+        return outcome
+
+    # Build an extended recording with inserted fill-steps before the failing
+    # submit step.
+    retry_rec = deepcopy(recording)
+    failed_idx = outcome.failed_step_index
+    # The failing step is the one AFTER the submit. We want to insert before
+    # the submit step itself — i.e. failed_idx - 1.
+    insert_at = max(0, failed_idx - 1)
+    auto_fills: list[dict] = []
+    for nr in outcome.new_required_fields_detected:
+        fp_dict = nr["fingerprint"]
+        attrs = fp_dict.get("attributes") or {}
+        value = value_for_field(attrs)
+        new_step = Step(
+            index=0,  # rewritten below
+            action="fill",
+            value=value,
+            element=ElementFingerprint.from_dict({
+                "id": fp_dict["id"],
+                "primary_locator": fp_dict["primary_locator"],
+                "fallback_locators": fp_dict.get("fallback_locators", []),
+                "attributes": attrs,
+                "page_context": fp_dict.get("page_context", {}),
+            }),
+            inserted_by="auto-heal",
+        )
+        retry_rec.steps.insert(insert_at, new_step)
+        insert_at += 1
+        auto_fills.append({
+            "fingerprint_id": fp_dict["id"],
+            "value": value,
+            "attributes": attrs,
+            "primary_locator": fp_dict["primary_locator"],
+            "fallback_locators": fp_dict.get("fallback_locators", []),
+            "source": "ai_test_data.value_for_field",
+        })
+    # Renumber step indices
+    for i, s in enumerate(retry_rec.steps):
+        s.index = i
+
+    retry_outcome = await replay_recording(
+        retry_rec,
+        data_overrides=data_overrides,
+        storage_state=storage_state,
+        headless=headless,
+        screenshot_dir=screenshot_dir,
+        element_timeout_ms=element_timeout_ms,
+        ai_matcher=ai_matcher,
+        healing_enabled=healing_enabled,
+        recording_path=None,  # don't write the retry's heals yet — user must approve
+        promote_on_pass=False,
+    )
+    retry_outcome.auto_filled_fields = auto_fills
+    retry_outcome.original_failure = {
+        "failed_step_index": failed_idx,
+        "error": outcome.error,
+    }
+    return retry_outcome
