@@ -227,3 +227,55 @@ async def test_passing_scenario_promotes_heals_to_recording(tmp_path):
     new_id = reloaded.steps[0].element.primary_locator.get("value")
     assert new_id != "fName"  # locator was rewritten away from the stale v1 id
     assert len(reloaded.steps[0].element.fingerprint_history) == 1
+
+
+@pytest.mark.asyncio
+async def test_failing_scenario_does_not_promote_heals(tmp_path):
+    """Step 0 fills a field (heal works), step 1 targets a field that
+    doesn't exist on the page (forced failure). Recording must NOT be
+    updated."""
+    from core.recording import save_recording, load_recording
+    fp_first = _fp(
+        "el-firstname",
+        primary_strategy="id", primary_value="fName",
+        attrs={
+            "tag": "input", "type": "text",
+            "nearest_label_text": "First Name",
+            "autocomplete": "given-name",
+            "html5_constraints": {"pattern": "", "required": False,
+                                  "maxlength": "", "minlength": "", "min": "", "max": ""},
+        },
+    )
+    fp_nonexistent = _fp(
+        "el-bogus",
+        primary_strategy="id", primary_value="nope_does_not_exist",
+        attrs={
+            "tag": "input", "type": "text",
+            "nearest_label_text": "Nothing Like This",
+            "html5_constraints": {"pattern": "", "required": False,
+                                  "maxlength": "", "minlength": "", "min": "", "max": ""},
+        },
+    )
+    rec = Recording(
+        id="rec-fail", name="t", kind="scenario",
+        application_id="app-1", created_at="2026-05-21",
+        start_url=_file_url("v2_id_changes.html"),
+        steps=[
+            Step(index=0, action="fill", value="Alice", element=fp_first),
+            Step(index=1, action="fill", value="X", element=fp_nonexistent),
+        ],
+    )
+    rec_path = tmp_path / "rec.yaml"
+    save_recording(str(rec_path), rec)
+
+    from core.replay import replay_recording
+    outcome = await replay_recording(
+        load_recording(str(rec_path)),
+        recording_path=str(rec_path),
+        headless=True, healing_enabled=True,
+    )
+    assert outcome.failed_step_index == 1
+    assert outcome.promoted_heals == []
+    reloaded = load_recording(str(rec_path))
+    assert reloaded.steps[0].element.fingerprint_history == []
+    assert reloaded.steps[0].element.primary_locator == {"strategy": "id", "value": "fName"}
