@@ -16,6 +16,7 @@ from ui.scenarios.steps_tab import render as render_steps
 from ui.scenarios.dataset_tab import render as render_dataset
 from ui.scenarios.runs_tab import render as render_runs
 from ui.scenarios.settings_tab import render as render_settings
+from ui.scenarios import recording_editor
 
 DATA_SCENARIOS = "data/scenarios"
 DATA_SCANS = "data/scans"
@@ -1561,8 +1562,42 @@ def render(scenario_id: str):
         _save_view_steps = lambda s: _save_steps(sc, s)
         _save_view_dataset = lambda d: _save_dataset(sc, d)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Steps", "Dataset", "Runs", "Settings"])
+    real_recordings = [
+        r for r in (sc.recordings or [])
+        if isinstance(r, dict) and r.get("id") and r.get("id") != "placeholder"
+    ]
+    has_rec_tab = bool(real_recordings)
+
+    if has_rec_tab:
+        tab1, tab2, tab3, tab4, tab_rec = st.tabs(
+            ["Steps", "Dataset", "Runs", "Settings", "Recording steps"]
+        )
+    else:
+        tab1, tab2, tab3, tab4 = st.tabs(["Steps", "Dataset", "Runs", "Settings"])
+
     with tab1: render_steps(view, _save_view_steps)
     with tab2: render_dataset(view, _save_view_dataset)
     with tab3: render_runs(sc)
     with tab4: render_settings(sc)
+
+    if has_rec_tab:
+        with tab_rec:
+            if len(real_recordings) == 1:
+                rec_id = real_recordings[0]["id"]
+            else:
+                names = {r["id"]: r.get("name", r["id"]) for r in real_recordings}
+                rec_id = st.selectbox(
+                    "Recording",
+                    options=list(names.keys()),
+                    format_func=lambda x: names[x],
+                    key=f"rec_picker_{sc.id}",
+                )
+
+            def _on_save_rec(updated_rec):
+                for i, r in enumerate(sc.recordings):
+                    if r.get("id") == rec_id:
+                        sc.recordings[i] = updated_rec.to_dict()
+                        break
+                save_scenario(DATA_SCENARIOS, sc)
+
+            recording_editor.render(sc, rec_id, _on_save_rec)
