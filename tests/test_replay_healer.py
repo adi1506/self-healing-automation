@@ -343,3 +343,16 @@ async def test_attempt_heal_honours_force_candidate_index(monkeypatch):
     # With override → returns runner-up
     d2 = await attempt_heal(page, stored, action="fill", force_candidate_index=1)
     assert d2.new_primary_locator["value"] == "mobile"
+
+
+def test_field_removed_constructor():
+    """field_removed is a new method distinct from unresolved — top-score
+    was too low AND no rename-guard hit."""
+    decision = HealDecision.field_removed(
+        diagnostics="best candidate scored 0.22; no autocomplete/name match",
+        runner_up_score=0.22,
+    )
+    assert decision.method == "field_removed"
+    assert decision.diagnostics.startswith("best candidate scored")
+    assert decision.matched_candidate is None
+    assert decision.new_primary_locator is None

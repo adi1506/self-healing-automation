@@ -27,6 +27,7 @@ from core.recording import ElementFingerprint
 # --- Decision thresholds --------------------------------------------------
 SCORE_THRESHOLD = 0.80   # top match must clear this to auto-heal
 GRAY_LOW = 0.55          # below this, no AI consultation either
+REMOVED_FLOOR = 0.40     # below this AND rename-guard fails → field appears removed
 MARGIN_REQ = 0.10        # top must beat runner-up by at least this
 AUTO_PERSIST_THRESHOLD = 0.90   # stricter bar for opt-in auto-write-back
 
@@ -64,6 +65,9 @@ class HealDecision:
       - "auto"          heuristic match cleared SCORE_THRESHOLD + MARGIN_REQ
       - "ai-confirmed"  gray-zone candidate confirmed by AIMatcher
       - "unresolved"    no candidate confident enough; step will fail
+      - "forced"        caller overrode the picker with a specific candidate index
+      - "field_removed" no candidate scored above REMOVED_FLOOR and no
+                        rename-guard hit — field looks deleted
     """
     method: str
     matched_candidate: Optional[ElementFingerprint] = None
@@ -84,6 +88,25 @@ class HealDecision:
     ) -> "HealDecision":
         return cls(
             method="unresolved",
+            diagnostics=diagnostics,
+            runner_up_score=runner_up_score,
+            top_k_candidates=list(top_k_candidates or []),
+        )
+
+    @classmethod
+    def field_removed(
+        cls,
+        diagnostics: str,
+        runner_up_score: float = 0.0,
+        top_k_candidates: Optional[list] = None,
+    ) -> "HealDecision":
+        """The healer scanned the page and found nothing close to the stored
+        fingerprint — neither score-wise nor by rename-guard. The field
+        appears to have been deleted from the live page. Distinct from
+        `unresolved` (which means "gray zone, can't commit") so the replay
+        loop can decide whether to skip-and-continue based on step type."""
+        return cls(
+            method="field_removed",
             diagnostics=diagnostics,
             runner_up_score=runner_up_score,
             top_k_candidates=list(top_k_candidates or []),
