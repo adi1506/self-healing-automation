@@ -101,6 +101,7 @@ class Step:
     hidden_elements: list[str] = field(default_factory=list)
     network: list[NetworkCapture] = field(default_factory=list)
     error_elements: list[ElementFingerprint] = field(default_factory=list)
+    inserted_by: Optional[str] = None  # "auto-heal" | "user_edit" | None (captured)
 
     def to_dict(self) -> dict:
         return {
@@ -113,6 +114,7 @@ class Step:
             "hidden_elements": list(self.hidden_elements),
             "network": [n.to_dict() for n in self.network],
             "error_elements": [e.to_dict() for e in self.error_elements],
+            "inserted_by": self.inserted_by,
         }
 
     @classmethod
@@ -127,6 +129,7 @@ class Step:
             hidden_elements=list(d.get("hidden_elements", [])),
             network=[NetworkCapture.from_dict(n) for n in d.get("network", [])],
             error_elements=[ElementFingerprint.from_dict(e) for e in d.get("error_elements", [])],
+            inserted_by=d.get("inserted_by"),
         )
 
 
@@ -165,6 +168,8 @@ class Recording:
     start_url: str
     steps: list[Step] = field(default_factory=list)
     success_signal: Optional[SuccessSignal] = None
+    healed_at: Optional[str] = None
+    acknowledged_missing_required: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -176,6 +181,8 @@ class Recording:
             "start_url": self.start_url,
             "steps": [s.to_dict() for s in self.steps],
             "success_signal": self.success_signal.to_dict() if self.success_signal else None,
+            "healed_at": self.healed_at,
+            "acknowledged_missing_required": list(self.acknowledged_missing_required),
         }
 
     @classmethod
@@ -189,6 +196,8 @@ class Recording:
             start_url=d["start_url"],
             steps=[Step.from_dict(s) for s in d.get("steps", [])],
             success_signal=SuccessSignal.from_dict(d["success_signal"]) if d.get("success_signal") else None,
+            healed_at=d.get("healed_at"),
+            acknowledged_missing_required=list(d.get("acknowledged_missing_required", [])),
         )
 
 

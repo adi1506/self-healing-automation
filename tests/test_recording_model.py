@@ -165,3 +165,34 @@ def test_fingerprint_history_confidence_none_round_trips():
     restored = ElementFingerprint.from_dict(fp.to_dict())
     assert restored.fingerprint_history[0].confidence is None
     assert restored.fingerprint_history[0].source == "auto_insert"
+
+
+def test_step_inserted_by_round_trips():
+    from core.recording import Step
+    s = Step(index=0, action="fill", value="x", inserted_by="auto-heal")
+    d = s.to_dict()
+    assert d["inserted_by"] == "auto-heal"
+    assert Step.from_dict(d).inserted_by == "auto-heal"
+
+
+def test_step_inserted_by_defaults_none_for_old_recording():
+    from core.recording import Step
+    s = Step.from_dict({"index": 0, "action": "fill", "value": "x"})
+    assert s.inserted_by is None
+
+
+def test_recording_healed_at_and_acknowledged_round_trip():
+    from core.recording import Recording
+    rec = Recording(
+        id="rec-1", name="r", kind="scenario",
+        application_id="app-1", created_at="2026-05-21",
+        start_url="http://x",
+        healed_at="2026-05-21T10:00:00Z",
+        acknowledged_missing_required=["phone"],
+    )
+    d = rec.to_dict()
+    assert d["healed_at"] == "2026-05-21T10:00:00Z"
+    assert d["acknowledged_missing_required"] == ["phone"]
+    restored = Recording.from_dict(d)
+    assert restored.healed_at == "2026-05-21T10:00:00Z"
+    assert restored.acknowledged_missing_required == ["phone"]
