@@ -572,54 +572,86 @@ async def replay_recording(
                             }
                             outcome.healed_steps += 1
                 except Exception as e:
-                    result["status"] = "failed"
-                    result["error"] = f"{type(e).__name__}: {e}"
-                    # Surface the healer's diagnostic on the failed step
-                    # even when no heal was committed — explains why the
-                    # best candidate wasn't picked.
-                    if heal_context is not None and heal_context.last_decision is not None:
-                        d = heal_context.last_decision
-                        result["heal_diagnostics"] = d.diagnostics
-                    outcome.failed_step_index = step.index
-                    outcome.error = f"{type(e).__name__}: {e}"
+                    # Distinguish "field looked removed AND skip is safe"
+                    # from a real failure. The healer writes its decision
+                    # to heal_context.last_decision; if that's
+                    # `field_removed` AND _is_step_skippable says yes,
+                    # record a warning and continue the loop.
+                    last = heal_context.last_decision if heal_context else None
+                    is_removed = last is not None and last.method == "field_removed"
+                    if is_removed and _is_step_skippable(step):
+                        result["status"] = "skipped_removed"
+                        result["error"] = None
+                        attrs = step.element.attributes if step.element else {}
+                        field_label = (
+                            attrs.get("nearest_label_text")
+                            or attrs.get("aria_label")
+                            or attrs.get("name")
+                            or (step.element.primary_locator.get("value", "") if step.element else "")
+                        )
+                        skip_entry = {
+                            "step_index": step.index,
+                            "action": step.action,
+                            "fingerprint_id": step.element.id if step.element else "",
+                            "field_label": field_label,
+                            "diagnostics": last.diagnostics,
+                        }
+                        outcome.skipped_steps.append(skip_entry)
+                        result["removal_diagnostics"] = last.diagnostics
+                        # DO NOT set failed = True — next iteration continues.
+                    else:
+                        result["status"] = "failed"
+                        result["error"] = f"{type(e).__name__}: {e}"
+                        if heal_context is not None and heal_context.last_decision is not None:
+                            d = heal_context.last_decision
+                            result["heal_diagnostics"] = d.diagnostics
+                            if d.method == "field_removed":
+                                # Blocker step had a removed target — surface
+                                # this distinctly so the UI can show
+                                # "Add step manually" CTA.
+                                result["removal_diagnostics"] = d.diagnostics
+                                outcome.error = f"field_removed (blocker): {e}"
+                            else:
+                                outcome.error = f"{type(e).__name__}: {e}"
+                        else:
+                            outcome.error = f"{type(e).__name__}: {e}"
+                        outcome.failed_step_index = step.index
 
-                    # Post-submit error scan: if a step just before this one
-                    # was a submit-like action, scan for new error messages
-                    # and identify required fields the recording didn't fill.
-                    prev_step = recording.steps[step.index - 1] if step.index > 0 else None
-                    prev_was_submit = (
-                        prev_step is not None
-                        and prev_step.action in ("click", "submit")
-                    )
-                    if prev_was_submit and heal_context is not None:
-                        try:
-                            errors = await page.evaluate("window.__sha.scanPostSubmitErrors()")
-                            pre_required = heal_context.pre_submit_snapshot.get(prev_step.index, [])
-                            filled_fp_ids = {
-                                s.element.id for s in recording.steps[:step.index]
-                                if s.element is not None and s.action in ("fill", "select", "check")
-                            }
-                            new_required = []
-                            for req in pre_required:
-                                if not req.get("is_empty"):
-                                    continue
-                                if req["id"] in filled_fp_ids:
-                                    continue
-                                err_text = next(
-                                    (err["error_text"] for err in errors
-                                     if err.get("associated_field")
-                                        and err["associated_field"]["id"] == req["id"]),
-                                    "",
-                                )
-                                new_required.append({
-                                    "fingerprint": req,
-                                    "error_text": err_text,
-                                })
-                            outcome.new_required_fields_detected = new_required
-                        except Exception:
-                            pass
+                        # Existing post-submit error scan path (unchanged)
+                        prev_step = recording.steps[step.index - 1] if step.index > 0 else None
+                        prev_was_submit = (
+                            prev_step is not None
+                            and prev_step.action in ("click", "submit")
+                        )
+                        if prev_was_submit and heal_context is not None:
+                            try:
+                                errors = await page.evaluate("window.__sha.scanPostSubmitErrors()")
+                                pre_required = heal_context.pre_submit_snapshot.get(prev_step.index, [])
+                                filled_fp_ids = {
+                                    s.element.id for s in recording.steps[:step.index]
+                                    if s.element is not None and s.action in ("fill", "select", "check")
+                                }
+                                new_required = []
+                                for req in pre_required:
+                                    if not req.get("is_empty"):
+                                        continue
+                                    if req["id"] in filled_fp_ids:
+                                        continue
+                                    err_text = next(
+                                        (err["error_text"] for err in errors
+                                         if err.get("associated_field")
+                                            and err["associated_field"]["id"] == req["id"]),
+                                        "",
+                                    )
+                                    new_required.append({
+                                        "fingerprint": req,
+                                        "error_text": err_text,
+                                    })
+                                outcome.new_required_fields_detected = new_required
+                            except Exception:
+                                pass
 
-                    failed = True
+                        failed = True
                 if run_dir:
                     shot_path = os.path.join(run_dir, f"step_{step.index:03d}.png")
                     try:

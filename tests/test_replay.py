@@ -293,3 +293,160 @@ def test_replay_outcome_skipped_steps_defaults_to_empty_list():
     # The two fields must be independent — skipping a step does not set
     # failed_step_index.
     assert outcome.failed_step_index is None
+
+
+def test_replay_skips_field_removed_on_optional_fill_and_continues(monkeypatch):
+    """Simulate: step 1 fill (optional, field removed), step 2 fill (passes).
+    Expected: outcome.failed_step_index is None, skipped_steps has 1 entry,
+    step 2 ran successfully."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from core.recording import Recording, Step, ElementFingerprint
+    from core.replay import replay_recording
+    from core.replay_healer import HealDecision
+
+    # Build a 2-step recording: optional fill, then required fill
+    fp_optional = ElementFingerprint(
+        id="fp-phone",
+        primary_locator={"strategy": "id", "value": "phone-input"},
+        fallback_locators=[],
+        attributes={
+            "tag": "input", "type": "tel",
+            "html5_constraints": {"required": False, "pattern": "", "maxlength": "", "minlength": "", "min": "", "max": ""},
+            "nearest_label_text": "Phone Number", "autocomplete": "tel",
+        },
+        page_context={"url": "https://example.com/form"},
+    )
+    fp_email = ElementFingerprint(
+        id="fp-email",
+        primary_locator={"strategy": "id", "value": "email-input"},
+        fallback_locators=[],
+        attributes={
+            "tag": "input", "type": "email",
+            "html5_constraints": {"required": True, "pattern": "", "maxlength": "", "minlength": "", "min": "", "max": ""},
+            "nearest_label_text": "Email", "autocomplete": "email",
+        },
+        page_context={"url": "https://example.com/form"},
+    )
+    rec = Recording(
+        id="r1", name="t", kind="scenario", application_id="a",
+        created_at="", start_url="https://example.com/form",
+        steps=[
+            Step(index=0, action="fill", value="555-1212", element=fp_optional),
+            Step(index=1, action="fill", value="user@x.com", element=fp_email),
+        ],
+    )
+
+    # Mock attempt_heal to return field_removed for fp-phone, real find for fp-email
+    async def fake_attempt_heal(page, fp, *, action, ai_matcher=None, force_candidate_index=None):
+        if fp.id == "fp-phone":
+            return HealDecision.field_removed(diagnostics="phone gone from page")
+        # Shouldn't be called for email — it'll resolve via locator.
+        return HealDecision.unresolved(diagnostics="unexpected")
+
+    # Patch playwright at the boundary — heaviest mock-out, but smallest
+    # surface area we need to fake.
+    with patch("core.replay.async_playwright") as mock_pw, \
+         patch("core.replay.attempt_heal", side_effect=fake_attempt_heal):
+        # Build a chain of mocks that mimics async_playwright().__aenter__()...
+        page = MagicMock()
+        page.goto = AsyncMock()
+        page.url = "https://example.com/form"
+        page.wait_for_timeout = AsyncMock()
+        page.evaluate = AsyncMock(return_value=[])
+
+        # Locator behavior: count() returns 0 for phone, 1 for email
+        def locator_factory(selector):
+            loc = MagicMock()
+            if "phone" in selector:
+                loc.count = AsyncMock(return_value=0)
+            else:
+                loc.count = AsyncMock(return_value=1)
+                loc.first.fill = AsyncMock()
+            return loc
+        page.locator = MagicMock(side_effect=locator_factory)
+        page.screenshot = AsyncMock()
+
+        context = MagicMock()
+        context.new_page = AsyncMock(return_value=page)
+        context.add_init_script = AsyncMock()
+        context.close = AsyncMock()
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.close = AsyncMock()
+        p_inst = MagicMock()
+        p_inst.chromium.launch = AsyncMock(return_value=browser)
+        mock_pw.return_value.__aenter__ = AsyncMock(return_value=p_inst)
+        mock_pw.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        outcome = asyncio.run(replay_recording(rec, element_timeout_ms=10))
+
+    assert outcome.failed_step_index is None, f"unexpectedly failed at step {outcome.failed_step_index}: {outcome.error}"
+    assert len(outcome.skipped_steps) == 1
+    assert outcome.skipped_steps[0]["step_index"] == 0
+    assert outcome.skipped_steps[0]["fingerprint_id"] == "fp-phone"
+    # Step 1 should have run normally
+    assert outcome.completed_steps == 1
+    # step_results: phone is skipped_removed, email is passed
+    statuses = [r["status"] for r in outcome.step_results]
+    assert statuses == ["skipped_removed", "passed"]
+
+
+def test_replay_does_not_skip_field_removed_on_blocker_step(monkeypatch):
+    """If a click step's target is field_removed, the run still fails —
+    a click is a blocker. Subsequent steps are marked skipped (cascade)."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from core.recording import Recording, Step, ElementFingerprint
+    from core.replay import replay_recording
+    from core.replay_healer import HealDecision
+
+    fp_btn = ElementFingerprint(
+        id="fp-submit",
+        primary_locator={"strategy": "id", "value": "submit-btn"},
+        fallback_locators=[],
+        attributes={
+            "tag": "button", "type": "submit",
+            "html5_constraints": {"required": False, "pattern": "", "maxlength": "", "minlength": "", "min": "", "max": ""},
+            "nearest_label_text": "Sign Up",
+        },
+        page_context={"url": "https://example.com/form"},
+    )
+    rec = Recording(
+        id="r1", name="t", kind="scenario", application_id="a",
+        created_at="", start_url="https://example.com/form",
+        steps=[Step(index=0, action="click", element=fp_btn)],
+    )
+
+    async def fake_attempt_heal(page, fp, *, action, ai_matcher=None, force_candidate_index=None):
+        return HealDecision.field_removed(diagnostics="button gone")
+
+    with patch("core.replay.async_playwright") as mock_pw, \
+         patch("core.replay.attempt_heal", side_effect=fake_attempt_heal):
+        page = MagicMock()
+        page.goto = AsyncMock()
+        page.url = "https://example.com/form"
+        page.wait_for_timeout = AsyncMock()
+        page.evaluate = AsyncMock(return_value=[])
+        loc = MagicMock(); loc.count = AsyncMock(return_value=0)
+        page.locator = MagicMock(return_value=loc)
+        page.screenshot = AsyncMock()
+        context = MagicMock()
+        context.new_page = AsyncMock(return_value=page)
+        context.add_init_script = AsyncMock()
+        context.close = AsyncMock()
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.close = AsyncMock()
+        p_inst = MagicMock()
+        p_inst.chromium.launch = AsyncMock(return_value=browser)
+        mock_pw.return_value.__aenter__ = AsyncMock(return_value=p_inst)
+        mock_pw.return_value.__aexit__ = AsyncMock(return_value=None)
+        outcome = asyncio.run(replay_recording(rec, element_timeout_ms=10))
+
+    assert outcome.failed_step_index == 0
+    assert outcome.skipped_steps == []
+    assert outcome.step_results[0]["status"] == "failed"
+    # Failure error message should mention field_removed for the UI to key on
+    assert "field_removed" in (outcome.error or "") or \
+           outcome.step_results[0].get("removal_diagnostics")
