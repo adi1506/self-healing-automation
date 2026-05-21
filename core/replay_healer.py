@@ -270,6 +270,43 @@ def _filter_by_landmark(stored: ElementFingerprint, candidates: list[ElementFing
     return in_scope if in_scope else candidates
 
 
+# Generic name values that any number of unrelated inputs commonly use —
+# matching on these would over-fire the rename-guard.
+_GENERIC_NAMES = {"input", "field", "value", "text", "data", "form", "item"}
+
+
+def _rename_guard_hit(
+    stored: ElementFingerprint,
+    candidates: list[ElementFingerprint],
+) -> bool:
+    """Return True if any candidate shares a high-signal stored attribute
+    exactly — meaning the field is still on the page, just renamed.
+
+    Signals checked (in order):
+      - `autocomplete` (browser-defined vocabulary; rarely changed by devs)
+      - `name` (non-generic, length >= 3)
+
+    The guard prevents the field_removed classification from firing on
+    drastic renames where label + id + css all diverged but the semantic
+    attribute didn't.
+    """
+    stored_ac = (stored.attributes.get("autocomplete") or "").strip().lower()
+    stored_name = (stored.attributes.get("name") or "").strip()
+
+    for c in candidates:
+        c_ac = (c.attributes.get("autocomplete") or "").strip().lower()
+        if stored_ac and c_ac == stored_ac:
+            return True
+
+    if stored_name and len(stored_name) >= 3 and stored_name.lower() not in _GENERIC_NAMES:
+        for c in candidates:
+            c_name = (c.attributes.get("name") or "").strip()
+            if c_name == stored_name:
+                return True
+
+    return False
+
+
 # --- Locator derivation (mirrors inject.js's pickPrimaryLocator) ---------
 def _derive_primary_locator(fp: ElementFingerprint) -> dict:
     """Pick the best locator from the candidate's attributes using the

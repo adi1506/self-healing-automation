@@ -356,3 +356,49 @@ def test_field_removed_constructor():
     assert decision.diagnostics.startswith("best candidate scored")
     assert decision.matched_candidate is None
     assert decision.new_primary_locator is None
+
+
+def test_rename_guard_matches_autocomplete():
+    """If a live candidate shares the stored autocomplete value exactly,
+    rename_guard_hit returns True regardless of label/name divergence."""
+    from core.replay_healer import _rename_guard_hit
+    stored = _fp(autocomplete="tel", name="phone", nearest_label_text="Phone Number")
+    candidates = [
+        _fp(autocomplete="tel", name="mobile_number", nearest_label_text="Mobile (for SMS)"),
+    ]
+    assert _rename_guard_hit(stored, candidates) is True
+
+
+def test_rename_guard_matches_name_non_generic():
+    """Non-generic stored `name` (length >= 3, not 'input'/'field') matching
+    a live candidate counts as a rename-guard hit."""
+    from core.replay_healer import _rename_guard_hit
+    stored = _fp(name="customer_phone", autocomplete="")
+    candidates = [_fp(name="customer_phone", nearest_label_text="Different label")]
+    assert _rename_guard_hit(stored, candidates) is True
+
+
+def test_rename_guard_ignores_generic_name():
+    """Generic stored names like 'input' or 'field' must not trigger the
+    guard — they'd false-positive against random unrelated inputs."""
+    from core.replay_healer import _rename_guard_hit
+    stored = _fp(name="input", autocomplete="")
+    candidates = [_fp(name="input")]
+    assert _rename_guard_hit(stored, candidates) is False
+
+
+def test_rename_guard_empty_stored_returns_false():
+    """If stored has neither autocomplete nor name, there's nothing to
+    guard against — return False (let the score decide)."""
+    from core.replay_healer import _rename_guard_hit
+    stored = _fp(autocomplete="", name="")
+    candidates = [_fp(name="anything")]
+    assert _rename_guard_hit(stored, candidates) is False
+
+
+def test_rename_guard_no_candidate_matches():
+    """Stored autocomplete is `tel` but no live candidate has it → False."""
+    from core.replay_healer import _rename_guard_hit
+    stored = _fp(autocomplete="tel")
+    candidates = [_fp(autocomplete="email"), _fp(autocomplete="")]
+    assert _rename_guard_hit(stored, candidates) is False
