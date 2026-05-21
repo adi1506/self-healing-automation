@@ -429,27 +429,51 @@ def test_select_match_field_removed_when_score_below_floor_and_no_guard():
 
 
 def test_select_match_unresolved_not_field_removed_when_guard_hits():
-    """Score is low but autocomplete matches → keep `unresolved` (fails
-    safe), do NOT classify as field_removed."""
+    """Top score is BELOW REMOVED_FLOOR but autocomplete matches → the
+    rename-guard sub-branch keeps `unresolved` (fails safe) rather than
+    classifying as field_removed.
+
+    Fixture design: stored has many present features so unmatched ones
+    drag the weighted score down; candidate matches only on autocomplete
+    (the high-signal rename-guard attribute) and diverges on everything
+    else. Action-compat still passes because `type='text'` is fill-able.
+    """
     stored = _fp(
-        name="phone", autocomplete="tel",
+        id="phone-input-zzz", name="phone_number_v2", autocomplete="tel",
+        placeholder="(555) 555-5555", aria_label="Phone",
         nearest_label_text="Phone Number", type="tel",
+        pattern=r"\d{3}-\d{3}-\d{4}", role="textbox",
     )
+    # Candidate matches autocomplete only; everything else diverges.
     candidates = [
-        _fp(name="mobile_x9z", autocomplete="tel",
-            nearest_label_text="Contact verification ID", type="tel"),
+        _fp(
+            id="abcdefg", name="xyz", autocomplete="tel",
+            placeholder="Search products and brands today",
+            aria_label="Quick site lookup",
+            nearest_label_text="What are you looking for here today?",
+            type="text",  # diverges from 'tel' but still fill-compatible
+            pattern="", role="searchbox",
+        ),
     ]
     decision = select_match(stored, candidates, action="fill")
+    # Must be unresolved (not field_removed) AND diagnostics must mention
+    # the rename-guard fired — otherwise we'd be passing via the wrong
+    # code path (e.g. gray-zone fallthrough).
     assert decision.method == "unresolved"
-    assert decision.method != "field_removed"
+    assert "rename-guard" in decision.diagnostics.lower()
 
 
 def test_select_match_gray_zone_unchanged():
-    """Score in [REMOVED_FLOOR, GRAY_LOW) with no AI confirmation stays
-    `unresolved` — that band is not the removed band."""
+    """When the top score is above REMOVED_FLOOR (the field is NOT in the
+    'appears removed' band), classification falls through to the existing
+    gray-zone/margin/no-AI explanations and returns `unresolved` — never
+    `field_removed`. Pins that the new below-floor branch was not taken."""
     stored = _fp(name="phone", nearest_label_text="Phone Number", type="tel")
     candidates = [
         _fp(name="phone_secondary", nearest_label_text="Phone (alt)", type="tel"),
     ]
     decision = select_match(stored, candidates, action="fill")
     assert decision.method == "unresolved"
+    # Must not have come through the below-floor (field_removed/guard-hit) branch.
+    assert "below removed-floor" not in decision.diagnostics.lower()
+    assert "rename-guard" not in decision.diagnostics.lower()
