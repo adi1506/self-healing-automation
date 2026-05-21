@@ -201,11 +201,17 @@ def test_select_match_picks_high_confidence_with_margin():
 
 
 def test_select_match_unresolved_when_top_is_low():
+    # When all candidates score below REMOVED_FLOOR (0.40) AND the
+    # rename-guard misses, the new classification is `field_removed` —
+    # the field appears genuinely gone from the page, not just renamed.
+    # The historical "unresolved" outcome for this scenario is now
+    # `field_removed`; see test_select_match_gray_zone_unchanged for the
+    # current `unresolved` case (gray zone, not below floor).
     stored = _fp(name="phone", type="tel", nearest_label_text="Phone Number")
     bad1 = _fp(name="email", type="email", nearest_label_text="Email")
     bad2 = _fp(name="zip", type="text", nearest_label_text="Zip")
     decision = select_match(stored, [bad1, bad2], action="fill", ai_matcher=None)
-    assert decision.method == "unresolved"
+    assert decision.method == "field_removed"
     assert decision.matched_candidate is None
 
 
@@ -402,3 +408,48 @@ def test_rename_guard_no_candidate_matches():
     stored = _fp(autocomplete="tel")
     candidates = [_fp(autocomplete="email"), _fp(autocomplete="")]
     assert _rename_guard_hit(stored, candidates) is False
+
+
+def test_select_match_field_removed_when_score_below_floor_and_no_guard():
+    """All candidates score low + rename-guard misses → field_removed."""
+    stored = _fp(
+        id="phone-input", name="phone", autocomplete="tel",
+        nearest_label_text="Phone Number", type="tel",
+    )
+    candidates = [
+        _fp(id="search-q", name="q", autocomplete="off",
+            nearest_label_text="Search", type="search"),
+        _fp(id="btn-go", name="go", tag="button",
+            nearest_label_text="Submit"),
+    ]
+    decision = select_match(stored, candidates, action="fill")
+    assert decision.method == "field_removed"
+    assert "below floor" in decision.diagnostics.lower() or \
+           "appears removed" in decision.diagnostics.lower()
+
+
+def test_select_match_unresolved_not_field_removed_when_guard_hits():
+    """Score is low but autocomplete matches → keep `unresolved` (fails
+    safe), do NOT classify as field_removed."""
+    stored = _fp(
+        name="phone", autocomplete="tel",
+        nearest_label_text="Phone Number", type="tel",
+    )
+    candidates = [
+        _fp(name="mobile_x9z", autocomplete="tel",
+            nearest_label_text="Contact verification ID", type="tel"),
+    ]
+    decision = select_match(stored, candidates, action="fill")
+    assert decision.method == "unresolved"
+    assert decision.method != "field_removed"
+
+
+def test_select_match_gray_zone_unchanged():
+    """Score in [REMOVED_FLOOR, GRAY_LOW) with no AI confirmation stays
+    `unresolved` — that band is not the removed band."""
+    stored = _fp(name="phone", nearest_label_text="Phone Number", type="tel")
+    candidates = [
+        _fp(name="phone_secondary", nearest_label_text="Phone (alt)", type="tel"),
+    ]
+    decision = select_match(stored, candidates, action="fill")
+    assert decision.method == "unresolved"

@@ -395,6 +395,10 @@ def select_match(
         scored.append((s, matched, c))
     scored.sort(key=lambda t: t[0], reverse=True)
 
+    # Keep a flat list of candidate fingerprints for the rename-guard check
+    # below — it inspects attributes, not scores.
+    scored_fps_for_guard = [fp for _s, _m, fp in scored]
+
     top_score, top_matched, top_fp = scored[0]
     runner_up_score = scored[1][0] if len(scored) > 1 else 0.0
     margin = top_score - runner_up_score
@@ -458,6 +462,31 @@ def select_match(
             )
 
     # Unresolved — explain why
+    if top_score < REMOVED_FLOOR:
+        # Score is in the "field appears removed" band. Apply rename-guard
+        # before classifying — if any candidate shares a high-signal
+        # attribute (autocomplete, non-generic name), the field is likely
+        # still there but heavily renamed, so we fail-safe with unresolved
+        # rather than telling the runner it's gone.
+        if _rename_guard_hit(stored, scored_fps_for_guard):
+            why = (
+                f"best candidate scored {top_score:.2f} (below {REMOVED_FLOOR:.2f}) "
+                f"but rename-guard hit on autocomplete/name — field renamed, not removed"
+            )
+            return HealDecision.unresolved(
+                diagnostics=f"{why}; {_top_n_diag()}",
+                runner_up_score=runner_up_score,
+                top_k_candidates=top_k,
+            )
+        why = (
+            f"best candidate scored {top_score:.2f}, below removed-floor "
+            f"{REMOVED_FLOOR:.2f}; field appears removed from page"
+        )
+        return HealDecision.field_removed(
+            diagnostics=f"{why}; {_top_n_diag()}",
+            runner_up_score=runner_up_score,
+            top_k_candidates=top_k,
+        )
     if top_score < gray_low:
         why = f"best candidate scored {top_score:.2f}, below floor {gray_low:.2f}"
     elif margin < margin_req:
