@@ -923,6 +923,34 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
             f"Replay completed all {outcome.completed_steps} steps{healed_suffix}. "
             f"Final URL: {outcome.final_url}"
         )
+        if outcome.promoted_heals:
+            n = len(outcome.promoted_heals)
+            st.info(
+                f"🩹 Recording updated to new baseline — {n} heal"
+                f"{'' if n == 1 else 's'} promoted."
+            )
+            with st.expander(f"View {n} change{'' if n == 1 else 's'} / revert"):
+                for ph in outcome.promoted_heals:
+                    cols = st.columns([4, 1])
+                    old = ph["old_primary_locator"]
+                    new = ph["new_primary_locator"]
+                    cols[0].markdown(
+                        f"**Step {ph['step_index']}** — "
+                        f"`{old['strategy']}:{old['value']}` "
+                        f"→ `{new['strategy']}:{new['value']}`  \n"
+                        f":gray[confidence {ph['confidence']:.0%} · method {ph['method']}]"
+                    )
+                    revert_key = f"revert_{sc.id}_{recording.id}_{ph['fingerprint_id']}"
+                    if cols[1].button("↶ Revert", key=revert_key):
+                        from core.replay import _revert_last_heal
+                        _revert_last_heal(
+                            scenario=sc,
+                            recording_id=recording.id,
+                            fingerprint_id=ph["fingerprint_id"],
+                        )
+                        # Invalidate cached outcome so banner clears on rerun
+                        st.session_state.pop(f"_replay_outcome_{sc.id}", None)
+                        st.rerun()
     _render_step_report(outcome, recording)
     btn_cols = st.columns([2, 2, 6])
     if btn_cols[0].button("↻ Run again", key=f"rerun_replay_{sc.id}"):
