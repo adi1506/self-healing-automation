@@ -450,3 +450,55 @@ def test_replay_does_not_skip_field_removed_on_blocker_step(monkeypatch):
     # Failure error message should mention field_removed for the UI to key on
     assert "field_removed" in (outcome.error or "") or \
            outcome.step_results[0].get("removal_diagnostics")
+
+
+def test_auto_fill_wrapper_preserves_skipped_steps_from_first_run(monkeypatch):
+    """If first run skipped a field_removed step AND detected a new
+    required field, the retry's outcome must still carry the
+    skipped_steps from the first run (the skip is real, regardless of
+    whether the retry confirms it again)."""
+    from core.replay import ReplayOutcome, replay_recording_with_auto_fill
+    from unittest.mock import patch
+    import asyncio
+    from core.recording import Recording
+
+    # First-call outcome: 1 skipped step + 1 failure + new_required_fields detected
+    first = ReplayOutcome()
+    first.failed_step_index = 1
+    first.skipped_steps = [{
+        "step_index": 0, "action": "fill",
+        "fingerprint_id": "fp-phone", "field_label": "Phone",
+        "diagnostics": "phone removed",
+    }]
+    first.new_required_fields_detected = [{
+        "fingerprint": {
+            "id": "fp-newfield",
+            "primary_locator": {"strategy": "id", "value": "new"},
+            "fallback_locators": [], "attributes": {"tag": "input", "type": "text"},
+            "page_context": {},
+        },
+        "error_text": "Required",
+    }]
+    # Second-call outcome: passed, skipped_steps empty (retry didn't see the
+    # phone-skip because the recording for retry only had the email step
+    # + auto-filled new-field — phone was original).
+    second = ReplayOutcome()
+    second.failed_step_index = None
+    second.skipped_steps = []
+    second.completed_steps = 2
+
+    call_count = {"n": 0}
+    async def fake_replay(*args, **kwargs):
+        call_count["n"] += 1
+        return first if call_count["n"] == 1 else second
+
+    rec = Recording(
+        id="r1", name="t", kind="scenario", application_id="a",
+        created_at="", start_url="https://x.com", steps=[],
+    )
+    with patch("core.replay.replay_recording", side_effect=fake_replay):
+        result = asyncio.run(replay_recording_with_auto_fill(rec))
+
+    assert result.failed_step_index is None  # retry passed
+    assert len(result.skipped_steps) == 1
+    assert result.skipped_steps[0]["fingerprint_id"] == "fp-phone"

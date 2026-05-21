@@ -788,4 +788,18 @@ async def replay_recording_with_auto_fill(
         "failed_step_index": failed_idx,
         "error": outcome.error,
     }
+    # Preserve first-run skipped_steps — those skips were real observations
+    # of removed fields, not artefacts of the retry. The retry's own
+    # skipped_steps (if any) are additive.
+    merged_skips = list(outcome.skipped_steps) + list(retry_outcome.skipped_steps)
+    # Dedupe by (step_index, fingerprint_id)
+    seen: set[tuple[int, str]] = set()
+    dedup: list[dict] = []
+    for s in merged_skips:
+        key = (s.get("step_index", -1), s.get("fingerprint_id", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(s)
+    retry_outcome.skipped_steps = dedup
     return retry_outcome
