@@ -303,6 +303,88 @@ def test_replay_outcome_skipped_steps_defaults_to_empty_list():
     assert outcome.failed_step_index is None
 
 
+def test_is_flutter_ordinal_locator_recognizes_all_strategies():
+    """A Flutter ordinal id can show up in any of three strategies the
+    recorder emits — all must be detected so they're filtered out of
+    the locator chain at replay time."""
+    from core.replay import _is_flutter_ordinal_locator
+
+    assert _is_flutter_ordinal_locator({"strategy": "id", "value": "flt-semantic-node-45"})
+    assert _is_flutter_ordinal_locator({"strategy": "css", "value": "flt-semantics#flt-semantic-node-45"})
+    assert _is_flutter_ordinal_locator({"strategy": "xpath", "value": "//*[@id='flt-semantic-node-45']"})
+    # Real ids, not ordinals — must NOT be filtered.
+    assert not _is_flutter_ordinal_locator({"strategy": "id", "value": "username"})
+    assert not _is_flutter_ordinal_locator({"strategy": "css", "value": "#login-button"})
+    assert not _is_flutter_ordinal_locator({"strategy": "xpath", "value": "//button[text()='Submit']"})
+    # Edge: the literal phrase "flt-semantic-node" without a digit suffix
+    # is NOT an ordinal (could be a class name etc.) — be conservative.
+    assert not _is_flutter_ordinal_locator({"strategy": "css", "value": "flt-semantic-node-host"})
+
+
+def test_find_element_skips_flutter_ordinal_locators_and_goes_to_healer():
+    """End-to-end: a fingerprint whose entire locator chain is Flutter
+    ordinals (id, css, xpath all referencing flt-semantic-node-N) must
+    not match by coincidence on the live page. Filter the chain to
+    empty, fall through to the healer, and let it pick by text/bbox."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from core.recording import ElementFingerprint
+    from core.replay import find_element_by_fingerprint, HealContext
+    from core.replay_healer import HealDecision
+
+    fp = ElementFingerprint(
+        id="fp-tile",
+        primary_locator={"strategy": "id", "value": "flt-semantic-node-45"},
+        fallback_locators=[
+            {"strategy": "css", "value": "flt-semantics#flt-semantic-node-45"},
+            {"strategy": "xpath", "value": "//*[@id='flt-semantic-node-45']"},
+        ],
+        attributes={"tag": "flt-semantics", "text_content": "Create Application"},
+        page_context={"url": "https://x/dashboard"},
+    )
+
+    healer_called = {"yes": False}
+
+    async def fake_heal(page, fingerprint, *, action, ai_matcher=None, force_candidate_index=None):
+        healer_called["yes"] = True
+        return HealDecision(
+            method="auto",
+            confidence=0.95,
+            new_primary_locator={"strategy": "css", "value": "[data-testid='create-app']"},
+        )
+
+    page = MagicMock()
+    page.wait_for_timeout = AsyncMock()
+    # Live page DOES have flt-semantic-node-45 (just a coincidence — it's
+    # some random other element this session). If the chain weren't
+    # stripped, locator.count() would return 1 and we'd return the wrong
+    # element. After the fix, the locator is filtered out and never even
+    # tried.
+    coincidental_loc = MagicMock()
+    coincidental_loc.count = AsyncMock(return_value=1)
+    healed_loc = MagicMock()
+    healed_loc.count = AsyncMock(return_value=1)
+    def locator_factory(selector):
+        if "create-app" in selector:
+            return healed_loc
+        return coincidental_loc
+    page.locator = MagicMock(side_effect=locator_factory)
+
+    ctx = HealContext()
+    ctx.action = "click"
+
+    with patch("core.replay.attempt_heal", side_effect=fake_heal):
+        result = asyncio.run(find_element_by_fingerprint(
+            page, fp, timeout_ms=10, heal_context=ctx,
+        ))
+
+    assert healer_called["yes"], (
+        "healer must be invoked when all stored locators are Flutter ordinals; "
+        "otherwise the coincidental-match bug would silently return wrong element"
+    )
+    assert result is healed_loc
+
+
 def test_normalize_url_for_compare_drops_query_keeps_hash():
     from core.replay import _normalize_url_for_compare
     # Query string is noise (trackers, session tokens) and must be dropped.

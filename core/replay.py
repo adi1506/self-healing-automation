@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import re
 import shutil
 import time
 import uuid
@@ -7,6 +8,28 @@ from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlsplit
 from playwright.async_api import async_playwright, Page, Locator
+
+
+# Flutter web emits <flt-semantics id="flt-semantic-node-N"> wrappers where
+# N is a sequential ordinal assigned at render time. The same N points at
+# completely different elements between sessions — sometimes between
+# renders within a session. A stored locator referencing this pattern is
+# strictly worse than no locator: it produces a "match" by coincidence
+# on whatever node was Nth this run, and the healer (which can use
+# text_content / bbox to find the real element) never gets called.
+# Strip these from the locator chain so the heal path takes over.
+_FLUTTER_ORDINAL_RE = re.compile(r"flt-semantic-node-\d+")
+
+
+def _is_flutter_ordinal_locator(loc_dict: dict) -> bool:
+    """Return True if this locator references a Flutter sequential ordinal.
+
+    Matches all three flavours the recorder produces from the same source:
+    `id`/`flt-semantic-node-12`, `css`/`flt-semantics#flt-semantic-node-12`,
+    `xpath`/`//*[@id='flt-semantic-node-12']`.
+    """
+    value = loc_dict.get("value", "") or ""
+    return bool(_FLUTTER_ORDINAL_RE.search(value))
 
 from core.capture import load_inject_js
 from core.recording import ElementFingerprint, Step, Recording
@@ -150,7 +173,17 @@ async def find_element_by_fingerprint(
     primary locator and writes the HealDecision into the context.
     """
     candidates = [fp.primary_locator, *fp.fallback_locators]
-    deadline = time.monotonic() + max(timeout_ms, 0) / 1000.0
+    # Strip Flutter ordinal locators (see `_is_flutter_ordinal_locator`).
+    # If every locator references the ordinal pattern, `candidates` becomes
+    # empty and the loop falls straight through to the healer, which uses
+    # text_content / bbox / role to find the right element by appearance
+    # rather than by misleading id.
+    candidates = [c for c in candidates if not _is_flutter_ordinal_locator(c)]
+    # No usable stored locator → skip the polling wait and let the healer
+    # take over immediately. Without this, the loop would burn the full
+    # `timeout_ms` polling an empty candidate list before reaching the
+    # heal path, which is just wasted time on Flutter-only recordings.
+    deadline = time.monotonic() + (max(timeout_ms, 0) / 1000.0 if candidates else 0)
     last_err: Exception | None = None
 
     # Heal cache short-circuit: a prior step healed this same fingerprint id,
