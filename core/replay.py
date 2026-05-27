@@ -5,6 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlsplit
 from playwright.async_api import async_playwright, Page, Locator
 
 from core.capture import load_inject_js
@@ -449,6 +450,28 @@ class ReplayOutcome:
     # field_label, diagnostics}. Does NOT include the post-failure cascade
     # (those still appear in step_results with status="skipped").
     skipped_steps: list[dict] = field(default_factory=list)
+    # Each entry: {step_index, expected_url, actual_url}. Populated before a
+    # step runs when the live page URL doesn't match the URL captured at
+    # record time. Warning-only in this iteration — the step still attempts
+    # to execute; the entry exists so the run report can flag "you replayed
+    # on the wrong page" cases that today surface as confusing "ambiguous
+    # fingerprint" failures.
+    page_context_warnings: list[dict] = field(default_factory=list)
+
+
+def _normalize_url_for_compare(url: str) -> str:
+    """Reduce a URL to the parts that should match across record and replay.
+
+    Drops the query string (tracking params, session tokens) but keeps the
+    fragment — SPAs (notably Flutter web) put their route in the hash, so
+    `/webapp/#/internal/dashboard` vs `/webapp/#/internal/newApplication`
+    is the signal we care about, not noise.
+    """
+    if not url:
+        return ""
+    p = urlsplit(url)
+    base = f"{p.scheme}://{p.netloc}{p.path}".rstrip("/")
+    return base + (f"#{p.fragment}" if p.fragment else "")
 
 
 def _promote_heals_to_recording(
@@ -817,6 +840,28 @@ async def replay_recording(
                     "screenshot_path": None,
                     "error": None,
                 }
+                # Page-context assertion (warning-only). Compare the live URL
+                # against the URL recorded for this step's element. Mismatch
+                # almost always means a navigation click was dropped at record
+                # time — the step about to run targets a page we never reached.
+                # Surfacing this BEFORE the step's fingerprint-miss noise turns
+                # "ambiguous candidate" failures into "you're on the wrong page"
+                # diagnostics. We don't fail the step here; downstream heal
+                # logic still owns the verdict for this iteration.
+                if step.element is not None:
+                    expected_raw = step.element.page_context.get("url", "")
+                    if expected_raw:
+                        actual_raw = page.url
+                        expected_norm = _normalize_url_for_compare(expected_raw)
+                        actual_norm = _normalize_url_for_compare(actual_raw)
+                        if expected_norm and expected_norm != actual_norm:
+                            warning = {
+                                "step_index": step.index,
+                                "expected_url": expected_raw,
+                                "actual_url": actual_raw,
+                            }
+                            outcome.page_context_warnings.append(warning)
+                            result["page_context_warning"] = warning
                 try:
                     await execute_step(
                         page, step,

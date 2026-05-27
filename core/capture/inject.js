@@ -270,6 +270,63 @@
     return null;
   }
 
+  // Flutter-specific click target resolution. Flutter web renders to canvas
+  // and exposes an accessibility overlay as <flt-semantics> elements inside
+  // <flt-semantics-host>. Widgets like InkWell / GestureDetector receive
+  // taps via Flutter's own gesture system; whether they expose role="button"
+  // depends on whether the app developer wrapped them in Semantics(button:
+  // true). Many apps don't — so a click on a real, tappable tile lands on
+  // a <flt-semantics> node with no role at all, and the standard
+  // interactivity walk drops it. This helper is the fallback: when the
+  // page is a Flutter app and no real-DOM interactive ancestor exists,
+  // treat the deepest reasonably-sized <flt-semantics> ancestor as the
+  // click target. Filters out the catch-all root semantic that spans the
+  // whole viewport (clicking that as the "intent" would be meaningless).
+  function _nearestFlutterClickable(el, clickX, clickY) {
+    if (!document.querySelector("flt-semantics-host")) return null;
+
+    const vw = window.innerWidth || 1280;
+    const vh = window.innerHeight || 720;
+    function _acceptable(node) {
+      if (!node || node.nodeType !== 1) return false;
+      if (!node.tagName || node.tagName.toLowerCase() !== "flt-semantics") return false;
+      const r = node.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      // Skip the page-spanning root (anything covering ~the whole viewport).
+      if (r.width >= vw * 0.95 && r.height >= vh * 0.95) return false;
+      return true;
+    }
+
+    // Strategy 1: walk up from the click target. Works when the click went
+    // through the semantics overlay (common when accessibility is on).
+    for (let cur = el; cur && cur.nodeType === 1 && cur !== document.body; cur = cur.parentNode) {
+      if (_acceptable(cur)) return cur;
+    }
+
+    // Strategy 2: positional probe. Flutter sometimes dispatches clicks on
+    // <flt-glass-pane> or <canvas>, which sit on top of the semantics tree
+    // and aren't its ancestors. elementsFromPoint at the click coordinates
+    // returns every layer at that point — the <flt-semantics> overlay is
+    // among them. Pick the smallest acceptable one (= the most specific).
+    if (typeof clickX === "number" && typeof clickY === "number" && document.elementsFromPoint) {
+      const stack = document.elementsFromPoint(clickX, clickY);
+      let smallest = null;
+      let smallestArea = Infinity;
+      for (const node of stack) {
+        if (!_acceptable(node)) continue;
+        const r = node.getBoundingClientRect();
+        const a = r.width * r.height;
+        if (a < smallestArea) {
+          smallest = node;
+          smallestArea = a;
+        }
+      }
+      if (smallest) return smallest;
+    }
+
+    return null;
+  }
+
   // Input types that ARE clickable buttons, not form-value fields. A click on
   // these is a real user intent and must be recorded. Everything else under
   // `<input>` (text, email, tel, number, date, color, range, checkbox, radio,
@@ -395,7 +452,17 @@
       // next click won't misattribute them to a hover.
       _hover.last_click_ts = performance.now();
 
-      const el = _nearestInteractiveOrNull(ev.target);
+      // Primary path: standard DOM interactivity walk. Catches buttons, links,
+      // inputs, and anything with a recognized ARIA role (including Flutter
+      // widgets that DID expose role=button via Semantics(button: true)).
+      let el = _nearestInteractiveOrNull(ev.target);
+      // Fallback for Flutter web apps whose tile widgets (InkWell,
+      // GestureDetector) don't surface as role=button. Without this, clicks
+      // on dashboard tiles / cards in semantics-enabled Flutter apps are
+      // silently dropped, leaving the recording missing the navigation step.
+      // Narrow: only fires when (a) primary path failed AND (b) the page
+      // is actually a Flutter app (<flt-semantics-host> present).
+      if (!el) el = _nearestFlutterClickable(ev.target, ev.clientX, ev.clientY);
       if (!el) return;
 
       // Reconstruct hover chain that preceded this click. Emit outermost

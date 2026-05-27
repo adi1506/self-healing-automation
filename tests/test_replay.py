@@ -303,6 +303,138 @@ def test_replay_outcome_skipped_steps_defaults_to_empty_list():
     assert outcome.failed_step_index is None
 
 
+def test_normalize_url_for_compare_drops_query_keeps_hash():
+    from core.replay import _normalize_url_for_compare
+    # Query string is noise (trackers, session tokens) and must be dropped.
+    assert _normalize_url_for_compare("https://x.com/app?ref=email") == \
+           _normalize_url_for_compare("https://x.com/app?ref=twitter")
+    # Fragment is the SPA route for hash-routed apps (Flutter web) and
+    # must be preserved.
+    a = _normalize_url_for_compare("https://x.com/app/#/dashboard")
+    b = _normalize_url_for_compare("https://x.com/app/#/newApplication")
+    assert a != b
+    assert "dashboard" in a and "newApplication" in b
+    # Trailing slash on path is normalized away so /app and /app/ match.
+    assert _normalize_url_for_compare("https://x.com/app") == \
+           _normalize_url_for_compare("https://x.com/app/")
+    # Empty is empty (caller skips the check in this case).
+    assert _normalize_url_for_compare("") == ""
+
+
+def test_replay_warns_when_live_page_diverges_from_recorded_url():
+    """If the replay is on /dashboard but the step's element was recorded
+    on /newApplication, surface a page_context_warning entry. The step
+    still attempts to execute — the warning is informational, not fatal."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from core.recording import Recording, Step, ElementFingerprint
+    from core.replay import replay_recording
+
+    fp = ElementFingerprint(
+        id="fp-radio",
+        primary_locator={"strategy": "id", "value": "some-radio"},
+        fallback_locators=[],
+        attributes={"tag": "input", "type": "radio"},
+        page_context={"url": "https://app.example.com/webapp/#/internal/newApplication"},
+    )
+    rec = Recording(
+        id="r1", name="t", kind="scenario", application_id="a",
+        created_at="",
+        start_url="https://app.example.com/webapp",
+        steps=[Step(index=0, action="click", value=None, element=fp)],
+    )
+
+    with patch("core.replay.async_playwright") as mock_pw:
+        page = MagicMock()
+        page.goto = AsyncMock()
+        # Live URL is the dashboard — does NOT match the recorded URL.
+        page.url = "https://app.example.com/webapp/#/internal/dashboard"
+        page.wait_for_timeout = AsyncMock()
+        page.evaluate = AsyncMock(return_value=[])
+
+        loc = MagicMock()
+        loc.count = AsyncMock(return_value=1)
+        loc.first.click = AsyncMock()
+        page.locator = MagicMock(return_value=loc)
+        page.screenshot = AsyncMock()
+
+        context = MagicMock()
+        context.new_page = AsyncMock(return_value=page)
+        context.add_init_script = AsyncMock()
+        context.close = AsyncMock()
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.close = AsyncMock()
+        p_inst = MagicMock()
+        p_inst.chromium.launch = AsyncMock(return_value=browser)
+        mock_pw.return_value.__aenter__ = AsyncMock(return_value=p_inst)
+        mock_pw.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        outcome = asyncio.run(replay_recording(rec, element_timeout_ms=10))
+
+    assert len(outcome.page_context_warnings) == 1
+    w = outcome.page_context_warnings[0]
+    assert w["step_index"] == 0
+    assert "newApplication" in w["expected_url"]
+    assert "dashboard" in w["actual_url"]
+    # Warning-only: the step is allowed to attempt execution; the mocked
+    # locator resolves so the run "passes". The warning's purpose is
+    # diagnostic, not gating.
+    assert outcome.step_results[0].get("page_context_warning") == w
+
+
+def test_replay_does_not_warn_when_only_query_string_differs():
+    """Query strings (tracking params, session ids) are stripped before
+    comparison — they must not produce false-positive warnings."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from core.recording import Recording, Step, ElementFingerprint
+    from core.replay import replay_recording
+
+    fp = ElementFingerprint(
+        id="fp-btn",
+        primary_locator={"strategy": "id", "value": "btn"},
+        fallback_locators=[],
+        attributes={"tag": "button"},
+        page_context={"url": "https://app.example.com/page?ref=email"},
+    )
+    rec = Recording(
+        id="r1", name="t", kind="scenario", application_id="a",
+        created_at="",
+        start_url="https://app.example.com/page",
+        steps=[Step(index=0, action="click", value=None, element=fp)],
+    )
+
+    with patch("core.replay.async_playwright") as mock_pw:
+        page = MagicMock()
+        page.goto = AsyncMock()
+        page.url = "https://app.example.com/page?ref=twitter"  # diff query, same page
+        page.wait_for_timeout = AsyncMock()
+        page.evaluate = AsyncMock(return_value=[])
+        loc = MagicMock()
+        loc.count = AsyncMock(return_value=1)
+        loc.first.click = AsyncMock()
+        page.locator = MagicMock(return_value=loc)
+        page.screenshot = AsyncMock()
+
+        context = MagicMock()
+        context.new_page = AsyncMock(return_value=page)
+        context.add_init_script = AsyncMock()
+        context.close = AsyncMock()
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.close = AsyncMock()
+        p_inst = MagicMock()
+        p_inst.chromium.launch = AsyncMock(return_value=browser)
+        mock_pw.return_value.__aenter__ = AsyncMock(return_value=p_inst)
+        mock_pw.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        outcome = asyncio.run(replay_recording(rec, element_timeout_ms=10))
+
+    assert outcome.page_context_warnings == []
+    assert "page_context_warning" not in outcome.step_results[0]
+
+
 def test_replay_skips_field_removed_on_optional_fill_and_continues(monkeypatch):
     """Simulate: step 1 fill (optional, field removed), step 2 fill (passes).
     Expected: outcome.failed_step_index is None, skipped_steps has 1 entry,

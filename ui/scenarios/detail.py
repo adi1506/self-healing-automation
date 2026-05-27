@@ -1004,6 +1004,25 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
 
     healed_n = getattr(outcome, "healed_steps", 0)
     healed_suffix = f" · {healed_n} healed 🩹" if healed_n else ""
+    # Top-level page-mismatch banner. If a navigation click was dropped
+    # at record time, the replay lands on the wrong page and downstream
+    # steps fail with cryptic "ambiguous fingerprint" errors. Surface
+    # this BEFORE the failure detail so users don't go chasing the
+    # symptom — the warning points at the real cause and at which step
+    # to inspect in the recording editor.
+    pcw_list = getattr(outcome, "page_context_warnings", None) or []
+    if pcw_list:
+        first = pcw_list[0]
+        n = len(pcw_list)
+        plural = "" if n == 1 else "s"
+        st.warning(
+            f"⚠ **Page mismatch on {n} step{plural}** — the replay landed on a "
+            f"different page than the recording captured. Most likely cause: "
+            f"a navigation click was dropped at record time. Earliest mismatch "
+            f"is at **step {first['step_index']}**.  \n"
+            f"**Expected:** `{first.get('expected_url', '')}`  \n"
+            f"**Actual:** `{first.get('actual_url', '')}`"
+        )
     if outcome.error:
         st.error(
             f"Replay failed at step {outcome.failed_step_index} after "
@@ -1329,6 +1348,19 @@ def _render_step_report(outcome, recording) -> None:
                 st.caption(f"value: `{r['value']}`")
             if healed and status == "passed":
                 _render_heal_block(healed)
+            # Surface page-context divergence before any other diagnostic.
+            # When this fires alongside a failure, it's usually the real
+            # cause — the step targets a page we never reached, so any
+            # downstream "ambiguous fingerprint" noise is a symptom.
+            pcw = r.get("page_context_warning")
+            if pcw:
+                st.warning(
+                    "**Page mismatch:** this step was recorded on a different "
+                    "page than the one replay landed on. Usually means a "
+                    "navigation click was dropped at record time.  \n"
+                    f"**Expected:** `{pcw.get('expected_url', '')}`  \n"
+                    f"**Actual:** `{pcw.get('actual_url', '')}`"
+                )
             if r.get("error"):
                 st.error(r["error"])
                 if r.get("heal_diagnostics"):
