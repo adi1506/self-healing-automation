@@ -64,12 +64,27 @@ async def _required_fields_from_page(page) -> list[dict]:
         return []
 
 
-async def _snapshot_page(session) -> Optional[Tuple[str, list[dict], list[dict]]]:
-    """Capture (url, candidates, required_fields) from the live page.
+async def _all_fields_from_page(page) -> list[dict]:
+    """Snapshot every interactive field on the page via scanAll().
+
+    Used to seed Recording.record_time_fields so replay-time schema diff can
+    distinguish "field added after recording" from "field present at recording
+    but never filled." Returns [] if the injected scanner isn't available.
+    """
+    try:
+        return await page.evaluate(
+            "() => (window.__sha && window.__sha.scanAll) ? window.__sha.scanAll() : []"
+        )
+    except Exception:
+        return []
+
+
+async def _snapshot_page(session) -> Optional[Tuple[str, list[dict], list[dict], list[dict]]]:
+    """Capture (url, candidates, required_fields, all_fields) from the live page.
 
     Returns None when the page is closed or capture fails partway — callers
-    keep their previous snapshot in that case. URL, candidates, and the
-    required-field snapshot are returned together so the picker never shows
+    keep their previous snapshot in that case. URL, candidates, required, and
+    all-fields scans are returned together so the picker never shows
     a URL paired with candidates from a different page.
     """
     if session.page.is_closed():
@@ -78,7 +93,8 @@ async def _snapshot_page(session) -> Optional[Tuple[str, list[dict], list[dict]]
         url = session.page.url
         candidates = await _candidates_from_page(session.page)
         required = await _required_fields_from_page(session.page)
-        return url, candidates, required
+        all_fields = await _all_fields_from_page(session.page)
+        return url, candidates, required, all_fields
     except Exception:
         return None
 
@@ -115,6 +131,7 @@ async def _run(args: argparse.Namespace) -> int:
     candidates: list[dict] = []
     state_payload: Optional[dict] = None
     required_fields_per_page: dict[str, list[dict]] = {}
+    all_fields_per_page: dict[str, list[dict]] = {}
 
     want_state = bool(args.output_storage_state)
 
@@ -122,8 +139,9 @@ async def _run(args: argparse.Namespace) -> int:
         nonlocal final_url, candidates, state_payload
         snap = await _snapshot_page(session)
         if snap is not None:
-            final_url, candidates, required = snap
+            final_url, candidates, required, all_fields = snap
             required_fields_per_page[final_url] = required
+            all_fields_per_page[final_url] = all_fields
         if want_state:
             state_snap = await _snapshot_storage(session)
             if state_snap is not None:
@@ -149,6 +167,32 @@ async def _run(args: argparse.Namespace) -> int:
             await asyncio.sleep(0.5)
 
     recording = await session.stop(name=args.name or "untitled")
+
+    # Flatten the all-fields scans collected across every page the user
+    # touched into Recording.record_time_fields. Each entry is a slim
+    # fingerprint dict the replay schema-diff can match against by name
+    # or label. Dedupe by (name, nearest_label_text) so a field visited on
+    # multiple pages doesn't show up twice.
+    slim_fields: list[dict] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for fields in all_fields_per_page.values():
+        for fp in fields:
+            attrs = fp.get("attributes") or {}
+            name = (attrs.get("name") or "").strip()
+            label = (attrs.get("nearest_label_text") or "").strip()
+            key = (name.lower(), label.lower())
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            slim_fields.append({
+                "id": fp.get("id", ""),
+                "name": name,
+                "nearest_label_text": label,
+                "autocomplete": attrs.get("autocomplete", "") or "",
+                "tag": (attrs.get("tag") or "").lower(),
+                "is_required": bool(attrs.get("is_required", False)),
+            })
+    recording.record_time_fields = slim_fields
 
     Path(args.output_recording).parent.mkdir(parents=True, exist_ok=True)
     save_recording(args.output_recording, recording)

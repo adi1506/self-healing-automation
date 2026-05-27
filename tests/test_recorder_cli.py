@@ -60,7 +60,7 @@ async def test_snapshot_survives_post_navigation_close():
 
     snap = await _snapshot_page(session)
     assert snap is not None
-    final_url, candidates, _required = snap
+    final_url, candidates, _required, _all_fields = snap
     assert start_marker in final_url
     first_candidates = list(candidates)
 
@@ -69,7 +69,7 @@ async def test_snapshot_survives_post_navigation_close():
 
     snap = await _snapshot_page(session)
     assert snap is not None
-    final_url, candidates, _required = snap
+    final_url, candidates, _required, _all_fields = snap
     assert target_marker in final_url
 
     await session.page.close()

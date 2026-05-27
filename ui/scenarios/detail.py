@@ -593,7 +593,7 @@ def _render_recorded_scenario(sc) -> None:
         st.info("No recordings yet. Start one below.")
     else:
         for r in real_recs:
-            _render_recording_row(sc, r)
+            _render_recording_section(sc, r)
 
     # Transient flows. Test-case authoring (manual / AI / Excel) renders ABOVE
     # the replay output so the form sits above the recorded Step-by-step list
@@ -609,6 +609,18 @@ def _render_recorded_scenario(sc) -> None:
     xls_target = st.session_state.get(f"_xls_target_{sc.id}")
     if xls_target:
         _render_excel_test_cases_uploader(sc, xls_target)
+
+    edit_target = st.session_state.get(f"_edit_rec_target_{sc.id}")
+    if edit_target:
+        _render_inline_recording_editor(sc, edit_target)
+
+    edit_tc_target = st.session_state.get(f"_edit_tc_target_{sc.id}")
+    if edit_tc_target:
+        _render_test_case_values_editor(sc, edit_tc_target)
+
+    edit_rec_vals_target = st.session_state.get(f"_edit_rec_values_target_{sc.id}")
+    if edit_rec_vals_target:
+        _render_recording_values_editor(sc, edit_rec_vals_target)
 
     replay_target = st.session_state.get(f"_replay_target_{sc.id}")
     if replay_target:
@@ -705,35 +717,51 @@ def _render_scenario_actions(sc) -> None:
         st.rerun()
 
 
-def _render_recording_row(sc, rec: dict) -> None:
-    """One recording shown as a row with Replay / Add test case (submenu) /
-    Delete, plus a saved-test-cases picker if any exist."""
+def _render_recording_section(sc, rec: dict) -> None:
+    """Renders one recording as a section: an Add-test-case action at the top,
+    then the recording itself shown as the first (default) test case row,
+    followed by one row per saved test-case variant.
+
+    Mental model: in this UI, the recording IS the happy-path test case. Saved
+    `ai_test_cases` are sibling variants that share the same step sequence and
+    only differ in the per-field override values."""
     rec_id = rec["id"]
-    name = rec.get("name", rec_id)
-    n_steps = len(rec.get("steps", []))
     picker_key = f"_addtc_picker_{sc.id}_{rec_id}"
-    st.markdown(f"**{name}** — {n_steps} steps")
-    cols = st.columns([2, 2, 2, 4])
-    if cols[0].button("▶ Replay recording", key=f"row_replay_{sc.id}_{rec_id}",
-                      type="primary"):
-        st.session_state[f"_replay_target_{sc.id}"] = rec_id
-        st.session_state.pop(f"_replay_overrides_{sc.id}", None)
-        st.session_state.pop(f"_replay_label_{sc.id}", None)
-        st.session_state.pop(f"_replay_outcome_{sc.id}", None)
-        st.rerun()
-    if cols[1].button("➕ Add test case", key=f"row_addtc_{sc.id}_{rec_id}"):
+
+    # ── Manual-assist banner: surfaces steps that will pause replay so the
+    # user knows what to expect (and that the browser will launch headed).
+    manual_step_indices = [
+        s.get("index") for s in rec.get("steps", []) if s.get("needs_manual")
+    ]
+    if manual_step_indices:
+        steps_phrase = ", ".join(f"step {i}" for i in manual_step_indices)
+        st.warning(
+            f"⏸ **This recording will pause for manual input at {steps_phrase}.** "
+            f"Replay launches a visible browser; complete the step in the "
+            f"browser yourself (captcha, OTP, etc.), then click **Resume "
+            f"automation** on the in-page banner. Toggle the ⏸ checkbox in "
+            f"Edit steps to change this."
+        )
+
+    # ── Top actions: Add test case + Edit steps (both apply to every case
+    # because the step sequence is shared across all test cases in the
+    # recording — per-case work happens in the rows below). ─────────────
+    add_cols = st.columns([2, 2, 6])
+    if add_cols[0].button("➕ Add test case", key=f"row_addtc_{sc.id}_{rec_id}"):
         st.session_state[picker_key] = not st.session_state.get(picker_key, False)
         st.rerun()
-    if cols[2].button("🗑 Delete", key=f"row_del_{sc.id}_{rec_id}"):
-        sc.recordings = [r for r in sc.recordings if r.get("id") != rec_id]
-        # Drop test cases that referenced this recording — they're now orphans.
-        sc.ai_test_cases = [
-            tc for tc in (sc.ai_test_cases or [])
-            if tc.get("recording_id") != rec_id
-        ]
-        save_scenario(DATA_SCENARIOS, sc)
+    if add_cols[1].button("✏ Edit steps", key=f"row_edit_{sc.id}_{rec_id}"):
+        # Toggle: re-clicking the open recording's button closes the editor.
+        current = st.session_state.get(f"_edit_rec_target_{sc.id}")
+        if current == rec_id:
+            st.session_state.pop(f"_edit_rec_target_{sc.id}", None)
+            st.session_state.pop(f"_manual_fix_step_idx_{sc.id}", None)
+        else:
+            st.session_state[f"_edit_rec_target_{sc.id}"] = rec_id
+            # Fresh manual click — clear any leftover scroll-to-step highlight
+            # from a prior manual-fix CTA so it doesn't bleed into this session.
+            st.session_state.pop(f"_manual_fix_step_idx_{sc.id}", None)
         st.rerun()
-
     if st.session_state.get(picker_key):
         with st.container(border=True):
             st.caption("How do you want to add the test case?")
@@ -754,33 +782,88 @@ def _render_recording_row(sc, rec: dict) -> None:
                 st.session_state.pop(picker_key, None)
                 st.rerun()
 
-    # Per-recording test-case selector: only render if cases exist.
+    # ── Happy-path row (the recording itself, no value overrides) ──────
+    _render_happy_path_row(sc, rec)
+
+    # ── One row per saved test case variant ────────────────────────────
     rec_cases = [
         tc for tc in (sc.ai_test_cases or [])
         if tc.get("recording_id") == rec_id
     ]
-    if rec_cases:
-        labels = [
-            f"{tc['name']} ({tc.get('expected_outcome', 'success')})"
-            for tc in rec_cases
-        ]
-        pick_key = f"_tc_pick_{sc.id}_{rec_id}"
-        st.selectbox(
-            "Test case", options=labels, key=pick_key,
-            label_visibility="collapsed",
-        )
-        if st.button(
-            "▶ Run with selected test case",
-            key=f"row_runtc_{sc.id}_{rec_id}",
-        ):
-            picked_label = st.session_state.get(pick_key)
-            tc = next((c for c, lbl in zip(rec_cases, labels) if lbl == picked_label), None)
-            if tc is not None:
-                st.session_state[f"_replay_target_{sc.id}"] = rec_id
-                st.session_state[f"_replay_overrides_{sc.id}"] = dict(tc.get("overrides", {}))
-                st.session_state[f"_replay_label_{sc.id}"] = f"{name} · {tc['name']}"
-                st.rerun()
+    for tc in rec_cases:
+        _render_test_case_row(sc, rec, tc)
+
     st.divider()
+
+
+def _render_happy_path_row(sc, rec: dict) -> None:
+    """The recording itself rendered as the default test case row.
+
+    Replay uses no overrides (the recording's own recorded values); Edit values
+    opens a values-only editor that writes back to `step.value` on the
+    recording; Delete removes the whole recording AND every derived test case
+    (they'd be orphans). Structural step edits live on the section-level
+    "Edit steps" button at the top, since steps are shared across all cases."""
+    rec_id = rec["id"]
+    name = rec.get("name", rec_id)
+    n_steps = len(rec.get("steps", []))
+    st.markdown(f"**{name}** — {n_steps} steps")
+    cols = st.columns([2, 2, 2, 4])
+    if cols[0].button("▶ Replay Test Case", key=f"row_replay_{sc.id}_{rec_id}",
+                      type="primary"):
+        st.session_state[f"_replay_target_{sc.id}"] = rec_id
+        st.session_state.pop(f"_replay_overrides_{sc.id}", None)
+        st.session_state.pop(f"_replay_label_{sc.id}", None)
+        st.session_state.pop(f"_replay_outcome_{sc.id}", None)
+        st.rerun()
+    if cols[1].button("✏ Edit values", key=f"row_edit_vals_{sc.id}_{rec_id}"):
+        current = st.session_state.get(f"_edit_rec_values_target_{sc.id}")
+        if current == rec_id:
+            st.session_state.pop(f"_edit_rec_values_target_{sc.id}", None)
+        else:
+            st.session_state[f"_edit_rec_values_target_{sc.id}"] = rec_id
+        st.rerun()
+    if cols[2].button("🗑 Delete", key=f"row_del_{sc.id}_{rec_id}"):
+        sc.recordings = [r for r in sc.recordings if r.get("id") != rec_id]
+        # Drop test cases that referenced this recording — they're now orphans.
+        sc.ai_test_cases = [
+            tc for tc in (sc.ai_test_cases or [])
+            if tc.get("recording_id") != rec_id
+        ]
+        save_scenario(DATA_SCENARIOS, sc)
+        st.rerun()
+
+
+def _render_test_case_row(sc, rec: dict, tc: dict) -> None:
+    """A saved test-case variant rendered as a peer row to the happy path.
+
+    Replay uses this case's overrides. "Edit values" opens a values-only editor
+    (steps are shared with the recording and cannot be edited per-case). Delete
+    removes only this test case."""
+    rec_id = rec["id"]
+    tc_id = tc["id"]
+    name = tc.get("name", tc_id)
+    expected = tc.get("expected_outcome", "success")
+    st.markdown(f"**{name}** ({expected})")
+    cols = st.columns([2, 2, 2, 4])
+    if cols[0].button("▶ Replay Test Case", key=f"tc_replay_{sc.id}_{tc_id}",
+                      type="primary"):
+        st.session_state[f"_replay_target_{sc.id}"] = rec_id
+        st.session_state[f"_replay_overrides_{sc.id}"] = dict(tc.get("overrides", {}))
+        st.session_state[f"_replay_label_{sc.id}"] = f"{rec.get('name', rec_id)} · {name}"
+        st.session_state.pop(f"_replay_outcome_{sc.id}", None)
+        st.rerun()
+    if cols[1].button("✏ Edit values", key=f"tc_edit_{sc.id}_{tc_id}"):
+        current = st.session_state.get(f"_edit_tc_target_{sc.id}")
+        if current == tc_id:
+            st.session_state.pop(f"_edit_tc_target_{sc.id}", None)
+        else:
+            st.session_state[f"_edit_tc_target_{sc.id}"] = tc_id
+        st.rerun()
+    if cols[2].button("🗑 Delete", key=f"tc_del_{sc.id}_{tc_id}"):
+        sc.ai_test_cases = [c for c in (sc.ai_test_cases or []) if c.get("id") != tc_id]
+        save_scenario(DATA_SCENARIOS, sc)
+        st.rerun()
 
 
 def _render_pending_recording(sc, rec_out: str, cand_out: str,
@@ -861,12 +944,14 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
         return
 
     force_runner_up = st.session_state.pop(f"_force_runner_up_{sc.id}", None)
+    auto_fill_overrides = st.session_state.pop(f"_auto_fill_overrides_{sc.id}", None)
 
     cache_key = f"_replay_outcome_{sc.id}"
     sig = (recording_id,
            tuple(sorted((overrides or {}).items())),
            label or "",
-           tuple(sorted((force_runner_up or {}).items())))
+           tuple(sorted((force_runner_up or {}).items())),
+           tuple(sorted((auto_fill_overrides or {}).items())))
     cached = st.session_state.get(cache_key)
     if cached is not None and cached.get("sig") == sig:
         recording = cached["recording"]
@@ -899,6 +984,7 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
                     screenshot_dir=work_dir,
                     recording_path=side_path,
                     force_runner_up=force_runner_up,
+                    auto_fill_overrides=auto_fill_overrides,
                 ),
             )
 
@@ -944,7 +1030,9 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
                     key=cta_key,
                     type="primary",
                 ):
-                    st.session_state[f"_manual_fix_recording_{sc.id}"] = recording.id
+                    # Single key drives both surfaces: the recorded-scenario
+                    # inline editor and the non-recorded "Recording steps" tab.
+                    st.session_state[f"_edit_rec_target_{sc.id}"] = recording.id
                     st.session_state[f"_manual_fix_step_idx_{sc.id}"] = failed_idx
                     st.session_state.pop(f"_replay_outcome_{sc.id}", None)
                     st.rerun()
@@ -996,16 +1084,33 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
         )
         if outcome.skipped_steps:
             n = len(outcome.skipped_steps)
+            n_removed = sum(1 for sk in outcome.skipped_steps if sk.get("reason") == "field_removed")
+            n_unresolved = sum(1 for sk in outcome.skipped_steps if sk.get("reason") == "unresolved")
+            parts = []
+            if n_removed:
+                parts.append(
+                    f"{n_removed} where the field appears removed from the page"
+                )
+            if n_unresolved:
+                parts.append(
+                    f"{n_unresolved} where the healer couldn't confidently match a candidate"
+                )
+            breakdown = "; ".join(parts) if parts else "reason unrecorded"
             st.warning(
-                f"⏭ **{n} step{'' if n == 1 else 's'} skipped because the "
-                f"target field appears to have been removed from the page.** "
+                f"⏭ **{n} step{'' if n == 1 else 's'} skipped — {breakdown}.** "
                 f"The scenario completed without them."
             )
             with st.expander(f"View {n} skipped step{'' if n == 1 else 's'}"):
                 for sk in outcome.skipped_steps:
+                    reason = sk.get("reason") or "unspecified"
+                    reason_label = {
+                        "field_removed": "field appears removed",
+                        "unresolved": "no confident match (gray zone)",
+                    }.get(reason, reason)
                     st.markdown(
                         f"- **Step {sk['step_index']}** (`{sk['action']}`) — "
-                        f"field `{sk['field_label'] or '(unnamed)'}` not found  \n"
+                        f"field `{sk['field_label'] or '(unnamed)'}` skipped  \n"
+                        f"  **Reason:** {reason_label}  \n"
                         f"  :gray[{sk['diagnostics']}]"
                     )
         if outcome.promoted_heals:
@@ -1037,48 +1142,7 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
                         st.session_state.pop(f"_replay_outcome_{sc.id}", None)
                         st.rerun()
     if outcome.auto_filled_fields:
-        if outcome.failed_step_index is None:
-            # Auto-retry passed
-            st.info(
-                "**Submit was blocked by a new required field. We filled it "
-                "in automatically and the scenario completed.**"
-            )
-            for af in outcome.auto_filled_fields:
-                attrs = af["attributes"]
-                label = attrs.get("nearest_label_text") or attrs.get("id") or "(unnamed)"
-                st.markdown(
-                    f"- **`{label}`** (`{attrs.get('tag')}`) — AI suggested value: "
-                    f"`{af['value']}`"
-                )
-            cols = st.columns([2, 2, 6])
-            if cols[0].button("💾 Save these steps to the recording",
-                              key=f"save_n2_{sc.id}_{recording.id}",
-                              type="primary"):
-                from core.replay import _save_auto_filled_steps
-                insert_before = (outcome.original_failure or {}).get("failed_step_index", 0)
-                _save_auto_filled_steps(
-                    scenario=sc,
-                    recording_id=recording.id,
-                    auto_filled=outcome.auto_filled_fields,
-                    insert_before_step_index=insert_before,
-                )
-                st.success("Saved.")
-                st.session_state.pop(f"_replay_outcome_{sc.id}", None)
-                st.rerun()
-            if cols[1].button("Discard", key=f"discard_n2_{sc.id}_{recording.id}"):
-                st.session_state.pop(f"_replay_outcome_{sc.id}", None)
-                st.rerun()
-        else:
-            # Auto-retry also failed
-            st.error(
-                "**A new required field was detected, but auto-filling it "
-                "didn't make the scenario pass. The failure may not be from "
-                "the missing field.**"
-            )
-            for af in outcome.auto_filled_fields:
-                attrs = af["attributes"]
-                label = attrs.get("nearest_label_text") or attrs.get("id") or "(unnamed)"
-                st.markdown(f"- We tried `{label}` = `{af['value']}` — no luck.")
+        _render_auto_fill_banner(sc, recording, outcome, cache_key)
     _render_step_report(outcome, recording)
     btn_cols = st.columns([2, 2, 6])
     if btn_cols[0].button("↻ Run again", key=f"rerun_replay_{sc.id}"):
@@ -1090,6 +1154,127 @@ def _render_replay(sc, recording_id: str, *, overrides: dict[str, str] | None = 
         st.session_state.pop(f"_replay_label_{sc.id}", None)
         st.session_state.pop(cache_key, None)
         st.rerun()
+
+
+def _render_auto_fill_banner(sc, recording, outcome, cache_key: str) -> None:
+    """Render the new-required-field banner.
+
+    Three paths:
+      - **Proactive pass** (`was_filled_in_run=False`): the run passed but
+        pre-submit diff or schema-diff flagged unfilled fields. Editable
+        AI value + [Add to recording / Discard].
+      - **Reactive pass** (`was_filled_in_run=True`, run passed): rerun
+        with the AI fill succeeded. Editable AI value + [Save / Discard].
+      - **Reactive fail** (run failed): rerun with AI fill didn't help.
+        Editable AI value + [Edit value & Retry / Give up].
+
+    Required vs optional visual distinction: when any detected field is
+    required, the banner is wrapped in st.container(border=True) with an
+    st.error heading (🚨 + "Mandatory new field detected — ignoring it
+    will break future replays."). Required rows render first with red
+    `:red[**Required**]` badges; optional rows below with neutral badges.
+    All-optional banners stay on the blue st.info path.
+    """
+    fills = outcome.auto_filled_fields
+    proactive = bool(fills) and not fills[0].get("was_filled_in_run", True)
+    # Mandatory rows first so the user sees high-stakes entries up top.
+    fills = sorted(fills, key=lambda af: not bool(af.get("is_required", False)))
+    any_required = any(bool(af.get("is_required", False)) for af in fills)
+
+    edited_values: dict[str, str] = {}
+
+    def _render_field_rows() -> None:
+        for af in fills:
+            attrs = af["attributes"]
+            fp_id = af["fingerprint_id"]
+            label = attrs.get("nearest_label_text") or attrs.get("id") or "(unnamed)"
+            tag = attrs.get("tag") or ""
+            is_req = bool(af.get("is_required", False))
+            badge = ":red[**Required**]" if is_req else ":gray[Optional]"
+            st.markdown(f"**`{label}`** (`{tag}`) — {badge} — AI suggested:")
+            key = f"edit_af_{sc.id}_{recording.id}_{fp_id}"
+            edited_values[fp_id] = st.text_input(
+                f"Value for {label}",
+                value=af["value"],
+                key=key,
+                label_visibility="collapsed",
+            )
+
+    if outcome.failed_step_index is None:
+        if any_required:
+            with st.container(border=True):
+                if proactive:
+                    st.error(
+                        "🚨 **Mandatory new field detected — ignoring it "
+                        "will break future replays.** The scenario completed "
+                        "this time (the form didn't enforce the field), but "
+                        "the field is marked required and should be added "
+                        "to the recording."
+                    )
+                else:
+                    st.error(
+                        "🚨 **Mandatory new field detected.** Submit was "
+                        "blocked; we filled it automatically and the "
+                        "scenario completed. Save the step to keep replays "
+                        "working."
+                    )
+                _render_field_rows()
+        else:
+            if proactive:
+                st.info(
+                    "**New field detected (optional).** Your recording "
+                    "doesn't fill it; the scenario completed without it. "
+                    "Add it now if you want replay to cover it."
+                )
+            else:
+                st.info(
+                    "**A new field was filled in automatically and the "
+                    "scenario completed.**"
+                )
+            _render_field_rows()
+    else:
+        st.error(
+            "**A new required field was detected, but auto-filling it "
+            "didn't make the scenario pass. The failure may not be from "
+            "the missing field — try editing the value and retrying.**"
+        )
+        _render_field_rows()
+
+    cols = st.columns([2, 2, 2, 4])
+    if outcome.failed_step_index is None:
+        # Pass — Save / Discard
+        save_label = "💾 Add to recording" if proactive else "💾 Save these steps to the recording"
+        if cols[0].button(save_label,
+                          key=f"save_n2_{sc.id}_{recording.id}",
+                          type="primary"):
+            from core.replay import _save_auto_filled_steps
+            # Apply the user's edits before saving
+            saved_fills = []
+            for af in fills:
+                saved_fills.append({**af, "value": edited_values.get(af["fingerprint_id"], af["value"])})
+            _save_auto_filled_steps(
+                scenario=sc,
+                recording_id=recording.id,
+                auto_filled=saved_fills,
+            )
+            st.success("Saved.")
+            st.session_state.pop(cache_key, None)
+            st.rerun()
+        if cols[1].button("Discard", key=f"discard_n2_{sc.id}_{recording.id}"):
+            st.session_state.pop(cache_key, None)
+            st.rerun()
+    else:
+        # Fail — Edit & Retry / Give up
+        if cols[0].button("↻ Retry with edited values",
+                          key=f"retry_n2_{sc.id}_{recording.id}",
+                          type="primary"):
+            # Stash overrides; on next render the wrapper picks them up.
+            st.session_state[f"_auto_fill_overrides_{sc.id}"] = dict(edited_values)
+            st.session_state.pop(cache_key, None)
+            st.rerun()
+        if cols[1].button("Give up", key=f"giveup_n2_{sc.id}_{recording.id}"):
+            st.session_state.pop(cache_key, None)
+            st.rerun()
 
 
 def _render_step_report(outcome, recording) -> None:
@@ -1117,6 +1302,7 @@ def _render_step_report(outcome, recording) -> None:
                 "failed": "❌",
                 "skipped": "⏭",
                 "skipped_removed": "⏭",
+                "skipped_unresolved": "⏭",
             }.get(status, "•")
         label_parts = [f"Step {r['step_index']}", r.get("action", "")]
         if step is not None and step.element is not None:
@@ -1131,10 +1317,13 @@ def _render_step_report(outcome, recording) -> None:
             label_parts.append(f"healed · {healed['confidence']:.0%}")
         if status == "skipped_removed":
             label_parts.append("field removed — skipped")
+        elif status == "skipped_unresolved":
+            label_parts.append("no confident match — skipped")
         header = f"{icon} " + " · ".join(p for p in label_parts if p)
+        is_skipped = status in ("skipped_removed", "skipped_unresolved")
         with st.expander(
             header,
-            expanded=(status in ("failed", "skipped_removed") or bool(healed)),
+            expanded=(status == "failed" or is_skipped or bool(healed)),
         ):
             if r.get("value") not in (None, ""):
                 st.caption(f"value: `{r['value']}`")
@@ -1144,12 +1333,24 @@ def _render_step_report(outcome, recording) -> None:
                 st.error(r["error"])
                 if r.get("heal_diagnostics"):
                     st.caption(f"healer: {r['heal_diagnostics']}")
-            if status == "skipped_removed" and r.get("removal_diagnostics"):
-                st.info(
-                    "**Field appears removed from the live page.** This step "
-                    "was safely skipped because it's not required to complete "
-                    "the scenario."
-                )
+            if is_skipped and r.get("removal_diagnostics"):
+                if status == "skipped_removed":
+                    st.info(
+                        "**Field appears removed from the live page.** This "
+                        "step was safely skipped because it's not required "
+                        "to complete the scenario.  \n"
+                        "**Reason:** healer scan found nothing close to the "
+                        "stored fingerprint (`field_removed`)."
+                    )
+                else:
+                    st.info(
+                        "**Healer couldn't confidently match a candidate.** "
+                        "This step was safely skipped because it's an "
+                        "optional fill / toggle — the scenario can complete "
+                        "without it.  \n"
+                        "**Reason:** best candidate scored in the gray zone "
+                        "below the heal floor (`unresolved`)."
+                    )
                 st.caption(f"healer: {r['removal_diagnostics']}")
             shot = r.get("screenshot_path")
             if shot and os.path.exists(shot):
@@ -1185,6 +1386,45 @@ def _render_heal_block(healed: dict) -> None:
         st.caption("matched on: " + ", ".join(matched_by))
     with st.expander("Candidate attributes (audit)"):
         st.json(healed.get("candidate_attrs") or {})
+
+
+def _render_inline_recording_editor(sc, recording_id: str) -> None:
+    """Inline wrapper around `recording_editor.render` for the recorded-scenario
+    page. Delegates per-step editing to the shared editor module and adds a
+    Close button so the user can dismiss it without picking another action.
+
+    Honors `_manual_fix_step_idx_{sc.id}` so a failed-replay → manual-fix CTA
+    drops the user on the right row with the 'add step here' highlight."""
+    rec_dict = next(
+        (r for r in sc.recordings if r.get("id") == recording_id), None,
+    )
+    if rec_dict is None:
+        st.error(f"Recording {recording_id!r} not found on this scenario.")
+        st.session_state.pop(f"_edit_rec_target_{sc.id}", None)
+        return
+
+    st.subheader(f"Edit steps — *{rec_dict.get('name', recording_id)}*")
+
+    def _on_save(updated_rec):
+        for i, r in enumerate(sc.recordings):
+            if r.get("id") == recording_id:
+                sc.recordings[i] = updated_rec.to_dict()
+                break
+        save_scenario(DATA_SCENARIOS, sc)
+
+    scroll_idx = st.session_state.get(f"_manual_fix_step_idx_{sc.id}")
+    recording_editor.render(
+        sc, recording_id, _on_save, scroll_to_step_index=scroll_idx,
+    )
+    # One-shot highlight: clear so it doesn't reappear on the next rerun.
+    if scroll_idx is not None:
+        st.session_state.pop(f"_manual_fix_step_idx_{sc.id}", None)
+
+    if st.button("Close editor", key=f"edit_close_{sc.id}_{recording_id}"):
+        st.session_state.pop(f"_edit_rec_target_{sc.id}", None)
+        st.session_state.pop(f"_manual_fix_step_idx_{sc.id}", None)
+        st.rerun()
+    st.divider()
 
 
 def _render_test_case_editor(sc, recording_id: str) -> None:
@@ -1259,6 +1499,164 @@ def _render_test_case_editor(sc, recording_id: str) -> None:
         save_scenario(DATA_SCENARIOS, sc)
         st.success(f"Saved test case *{tc_name.strip()}*.")
         st.session_state.pop(f"_addtc_target_{sc.id}", None)
+        st.rerun()
+
+
+def _render_recording_values_editor(sc, recording_id: str) -> None:
+    """Edit the recording's own recorded values (Happy path's values).
+
+    Writes directly to `step.value` on the recording's fill/select steps.
+    Structural changes (adding/removing/reordering steps) live in the
+    section-level "Edit steps" button, not here."""
+    rec_dict = next(
+        (r for r in sc.recordings if r.get("id") == recording_id), None,
+    )
+    if rec_dict is None:
+        st.error(f"Recording {recording_id!r} not found on this scenario.")
+        st.session_state.pop(f"_edit_rec_values_target_{sc.id}", None)
+        return
+
+    st.subheader(f"Edit values — *{rec_dict.get('name', recording_id)}*")
+    st.caption(
+        "These are the recording's own values (the Happy path baseline). "
+        "Variant test cases override individual fields on top of these. To "
+        "add or reorder steps, use *Edit steps* at the top of the section."
+    )
+
+    overridable_indexes = [
+        i for i, s in enumerate(rec_dict.get("steps", []) or [])
+        if s.get("action") in ("fill", "select") and s.get("element")
+    ]
+    if not overridable_indexes:
+        st.info("This recording has no fill/select steps to vary.")
+        if st.button("Close", key=f"rec_vals_close_empty_{sc.id}_{recording_id}"):
+            st.session_state.pop(f"_edit_rec_values_target_{sc.id}", None)
+            st.rerun()
+        return
+
+    with st.form(f"rec_vals_form_{sc.id}_{recording_id}"):
+        new_values: dict[int, str] = {}
+        for step_idx in overridable_indexes:
+            step = rec_dict["steps"][step_idx]
+            elem = step["element"]
+            label = (
+                elem.get("attributes", {}).get("aria_label")
+                or elem.get("attributes", {}).get("name")
+                or elem.get("primary_locator", {}).get("value")
+                or elem["id"]
+            )
+            new_values[step_idx] = st.text_input(
+                f"{step['action']}: {label}",
+                value=step.get("value") or "",
+                key=f"rec_vals_{sc.id}_{recording_id}_{step_idx}",
+            )
+        col_save, col_cancel = st.columns([1, 1])
+        save_clicked = col_save.form_submit_button("Save changes", type="primary")
+        cancel_clicked = col_cancel.form_submit_button("Cancel")
+
+    if cancel_clicked:
+        st.session_state.pop(f"_edit_rec_values_target_{sc.id}", None)
+        st.rerun()
+    if save_clicked:
+        for step_idx, val in new_values.items():
+            rec_dict["steps"][step_idx]["value"] = val
+        # Persist by re-saving the scenario (rec_dict is a live reference into
+        # sc.recordings, so mutating it is enough to reflect in the scenario).
+        save_scenario(DATA_SCENARIOS, sc)
+        st.success("Updated recorded values.")
+        st.session_state.pop(f"_edit_rec_values_target_{sc.id}", None)
+        # Invalidate any cached replay outcome that used the old values.
+        st.session_state.pop(f"_replay_outcome_{sc.id}", None)
+        st.rerun()
+
+
+def _render_test_case_values_editor(sc, tc_id: str) -> None:
+    """Edit an existing test case's name, expected outcome, and per-field
+    override values. Steps are shared with the underlying recording and are
+    intentionally not editable here — use the recording's "Edit steps" button
+    for structural changes."""
+    tc = next((c for c in (sc.ai_test_cases or []) if c.get("id") == tc_id), None)
+    if tc is None:
+        st.error(f"Test case {tc_id!r} not found on this scenario.")
+        st.session_state.pop(f"_edit_tc_target_{sc.id}", None)
+        return
+    rec_id = tc.get("recording_id")
+    rec_dict = next((r for r in sc.recordings if r.get("id") == rec_id), None)
+    if rec_dict is None:
+        st.error(f"Test case references missing recording {rec_id!r}.")
+        st.session_state.pop(f"_edit_tc_target_{sc.id}", None)
+        return
+
+    st.subheader(f"Edit values — *{tc.get('name', tc_id)}*")
+    st.caption(
+        "Steps are shared with the recording. Only values change per test "
+        "case. To add or reorder steps, use the recording's *Edit steps* "
+        "button instead."
+    )
+
+    overridable = [
+        s for s in rec_dict.get("steps", [])
+        if s.get("action") in ("fill", "select") and s.get("element")
+    ]
+    if not overridable:
+        st.info("This recording has no fill/select steps to vary.")
+        if st.button("Close", key=f"tc_edit_close_empty_{sc.id}_{tc_id}"):
+            st.session_state.pop(f"_edit_tc_target_{sc.id}", None)
+            st.rerun()
+        return
+
+    existing_overrides = dict(tc.get("overrides") or {})
+
+    with st.form(f"edittc_form_{sc.id}_{tc_id}"):
+        new_name = st.text_input(
+            "Test case name", value=tc.get("name", ""),
+            key=f"tc_edit_name_{sc.id}_{tc_id}",
+        )
+        new_expected = st.selectbox(
+            "Expected outcome", ["success", "failure"],
+            index=0 if tc.get("expected_outcome", "success") != "failure" else 1,
+            key=f"tc_edit_exp_{sc.id}_{tc_id}",
+        )
+        st.caption("Per-field values (leave a field blank only when the test case is exercising an empty value):")
+        new_overrides: dict[str, str] = {}
+        for step in overridable:
+            elem = step["element"]
+            fp_id = elem["id"]
+            label = (
+                elem.get("attributes", {}).get("aria_label")
+                or elem.get("attributes", {}).get("name")
+                or elem.get("primary_locator", {}).get("value")
+                or fp_id
+            )
+            # Prefer the existing override; fall back to the recording's value
+            # so brand-new fingerprints (added since this case was saved) start
+            # with the recording's baseline value rather than empty.
+            default_val = existing_overrides.get(fp_id, step.get("value") or "")
+            val = st.text_input(
+                f"{step['action']}: {label}",
+                value=default_val,
+                key=f"tc_edit_ovr_{sc.id}_{tc_id}_{fp_id}",
+            )
+            new_overrides[fp_id] = val
+        col_save, col_cancel = st.columns([1, 1])
+        save_clicked = col_save.form_submit_button("Save changes", type="primary")
+        cancel_clicked = col_cancel.form_submit_button("Cancel")
+
+    if cancel_clicked:
+        st.session_state.pop(f"_edit_tc_target_{sc.id}", None)
+        st.rerun()
+    if save_clicked:
+        if not new_name.strip():
+            st.error("Give the test case a name before saving.")
+            return
+        tc["name"] = new_name.strip()
+        tc["expected_outcome"] = new_expected
+        tc["overrides"] = new_overrides
+        save_scenario(DATA_SCENARIOS, sc)
+        st.success(f"Updated *{new_name.strip()}*.")
+        st.session_state.pop(f"_edit_tc_target_{sc.id}", None)
+        # Invalidate any cached replay result that used the previous overrides.
+        st.session_state.pop(f"_replay_outcome_{sc.id}", None)
         st.rerun()
 
 
@@ -1657,7 +2055,7 @@ def render(scenario_id: str):
                 save_scenario(DATA_SCENARIOS, sc)
 
             scroll_idx = st.session_state.get(f"_manual_fix_step_idx_{sc.id}")
-            target_rec = st.session_state.get(f"_manual_fix_recording_{sc.id}")
+            target_rec = st.session_state.get(f"_edit_rec_target_{sc.id}")
             recording_editor.render(
                 sc, rec_id, _on_save_rec,
                 scroll_to_step_index=(
@@ -1666,5 +2064,5 @@ def render(scenario_id: str):
             )
             if scroll_idx is not None and target_rec == rec_id:
                 # Show once, then clear so the highlight clears on next rerun.
-                st.session_state.pop(f"_manual_fix_recording_{sc.id}", None)
+                st.session_state.pop(f"_edit_rec_target_{sc.id}", None)
                 st.session_state.pop(f"_manual_fix_step_idx_{sc.id}", None)

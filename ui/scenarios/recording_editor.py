@@ -32,8 +32,10 @@ def render(
 
     st.caption(
         "ⓘ **Recording steps** — captured from real interactions. You can "
-        "edit step values inline, insert a fill step above any row, delete "
-        "a step, or revert a locator to an earlier heal-history state."
+        "edit values inline (text for fill/press, dropdown for select with "
+        "captured options, checkbox toggle for checkbox steps), insert a "
+        "fill step above any row, delete a step, or revert a locator to an "
+        "earlier heal-history state. Hit **Save value edits** to persist."
     )
 
     if not rec.steps:
@@ -47,7 +49,7 @@ def render(
 
     # Render each step as a row
     for i, s in enumerate(rec.steps):
-        cols = st.columns([0.5, 1.5, 3, 3, 0.5, 0.5, 0.5, 0.6])
+        cols = st.columns([0.5, 1.5, 3, 3, 0.7, 0.5, 0.5, 0.5, 0.6])
         if scroll_to_step_index is not None and i == scroll_to_step_index:
             st.markdown(
                 f":blue-background[**👉 Add a step here** — the failed "
@@ -56,18 +58,26 @@ def render(
         cols[0].write(f"**{i}**")
         cols[1].write(f"`{s.action}`")
         cols[2].markdown(_target_label(s) or ":gray[(no target)]")
-        if s.action in ("fill", "select", "press"):
-            new_val = cols[3].text_input(
-                "Value",
-                value=s.value or "",
-                label_visibility="collapsed",
-                key=f"rec_val_{recording_id}_{i}",
-            )
-            s.value = new_val or None
-        else:
-            cols[3].markdown(f":gray[{s.value or ''}]")
+        _render_value_widget(cols[3], s, recording_id, i)
+        # Manual-assist toggle — pause replay here, let the user act in
+        # the page. Auto-detected at record time for captcha/OTP-like
+        # fields; this lets the user override either way.
+        new_needs_manual = cols[4].checkbox(
+            "⏸",
+            value=s.needs_manual,
+            label_visibility="collapsed",
+            key=f"rec_manual_{recording_id}_{i}",
+            help=(
+                "Pause replay at this step and let me solve it manually "
+                "(captcha, OTP, etc.). Forces headed browser at replay."
+            ),
+        )
+        if new_needs_manual != s.needs_manual:
+            s.needs_manual = new_needs_manual
+            on_save(rec)
+            st.rerun()
         # Delete
-        if cols[4].button("🗑", key=f"rec_del_{recording_id}_{i}",
+        if cols[5].button("🗑", key=f"rec_del_{recording_id}_{i}",
                           help="Delete this step"):
             del rec.steps[i]
             for j, ss in enumerate(rec.steps):
@@ -75,7 +85,7 @@ def render(
             on_save(rec)
             st.rerun()
         # Insert above
-        if cols[5].button("+", key=f"rec_ins_{recording_id}_{i}",
+        if cols[6].button("+", key=f"rec_ins_{recording_id}_{i}",
                           help="Insert empty fill step above"):
             new_step = Step(index=i, action="fill", value="",
                             element=None, inserted_by="user_edit")
@@ -86,19 +96,19 @@ def render(
             st.rerun()
         # Revert (only when there's history)
         if s.element and s.element.fingerprint_history:
-            if cols[6].button("↶", key=f"rec_rev_{recording_id}_{i}",
+            if cols[7].button("↶", key=f"rec_rev_{recording_id}_{i}",
                               help="Revert from heal history"):
                 st.session_state[f"_rev_popup_{recording_id}_{i}"] = True
                 st.rerun()
         else:
-            cols[6].write("")
-        # Marker (now at index 7)
+            cols[7].write("")
+        # Marker (now at index 8)
         marker_parts = []
         if s.inserted_by:
             marker_parts.append(f":gray[{s.inserted_by}]")
         if s.element and s.element.fingerprint_history:
             marker_parts.append(f":gray[↶{len(s.element.fingerprint_history)}]")
-        cols[7].markdown(" ".join(marker_parts) or "")
+        cols[8].markdown(" ".join(marker_parts) or "")
 
         # Revert popover — rendered beneath the row when its flag is set
         if st.session_state.get(f"_rev_popup_{recording_id}_{i}", False):
@@ -134,6 +144,90 @@ def render(
         on_save(rec)
         st.success("Recording saved.")
         st.rerun()
+
+
+def _render_value_widget(col, s: Step, recording_id: str, i: int) -> None:
+    """Render the right widget for this step's value column.
+
+    Dispatch matrix:
+      - fill / press                → text input (free-form string)
+      - select with captured opts   → dropdown of {label, value}
+      - select without opts         → text input (older recordings)
+      - check/uncheck on a checkbox → st.checkbox toggling action between
+                                       'check' and 'uncheck' (Playwright
+                                       .check()/.uncheck() ignores `value`)
+      - check on a radio            → gray text (value identifies which
+                                       radio; changing it does nothing on
+                                       replay since .check() ignores value)
+      - everything else             → gray text
+    """
+    attrs = (s.element.attributes if s.element else {}) or {}
+    elem_type = (attrs.get("type") or "").lower()
+    elem_role = (attrs.get("role") or "").lower()
+
+    if s.action in ("fill", "press"):
+        new_val = col.text_input(
+            "Value",
+            value=s.value or "",
+            label_visibility="collapsed",
+            key=f"rec_val_{recording_id}_{i}",
+        )
+        s.value = new_val or None
+        return
+
+    if s.action == "select":
+        opts = attrs.get("select_options") or []
+        if isinstance(opts, list) and opts:
+            values = [str(o.get("value", "")) for o in opts]
+            labels = {
+                str(o.get("value", "")): (
+                    str(o.get("label") or o.get("value") or "")
+                )
+                for o in opts
+            }
+            # If the current value isn't in the captured options (e.g. a
+            # test-case override set a custom string, or the options changed
+            # since capture), prepend it so the dropdown can still show it.
+            if s.value and s.value not in values:
+                values = [s.value] + values
+                labels.setdefault(s.value, s.value)
+            idx = values.index(s.value) if s.value in values else 0
+            new_val = col.selectbox(
+                "Value",
+                options=values,
+                index=idx,
+                format_func=lambda v: labels.get(v, v),
+                label_visibility="collapsed",
+                key=f"rec_val_{recording_id}_{i}",
+            )
+            s.value = new_val or None
+            return
+        # Fallback for recordings made before option capture landed.
+        new_val = col.text_input(
+            "Value",
+            value=s.value or "",
+            label_visibility="collapsed",
+            key=f"rec_val_{recording_id}_{i}",
+        )
+        s.value = new_val or None
+        return
+
+    if s.action in ("check", "uncheck") and (
+        elem_type == "checkbox" or elem_role == "checkbox"
+    ):
+        is_checked = (s.action == "check")
+        new_checked = col.checkbox(
+            "Checked",
+            value=is_checked,
+            label_visibility="collapsed",
+            key=f"rec_chk_{recording_id}_{i}",
+        )
+        # The action itself encodes state — Playwright's check()/uncheck()
+        # ignore `value`, so we swap the action when the user toggles.
+        s.action = "check" if new_checked else "uncheck"
+        return
+
+    col.markdown(f":gray[{s.value or ''}]")
 
 
 def _target_label(step: Step) -> str:

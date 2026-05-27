@@ -91,6 +91,10 @@ async def test_records_unresolved_when_field_truly_absent():
     """Asking the healer to relocate something that doesn't exist on the
     target page must NOT silently heal to an unrelated field — it must
     fail loudly with diagnostics."""
+    # `required=True` + recorded value pins this as a non-skippable fill.
+    # The skip-and-continue path only applies to skippable steps; for the
+    # "must fail loudly, must not silently heal to an unrelated field"
+    # guarantee, the test needs a blocker. See _is_step_skippable.
     fp = _fp(
         "el-nonexistent",
         primary_strategy="id",
@@ -105,7 +109,7 @@ async def test_records_unresolved_when_field_truly_absent():
             "autocomplete": "",
             "role": "",
             "aria_label": "",
-            "html5_constraints": {"pattern": "", "required": False, "maxlength": "",
+            "html5_constraints": {"pattern": "", "required": True, "maxlength": "",
                                   "minlength": "", "min": "", "max": ""},
         },
     )
@@ -246,13 +250,16 @@ async def test_failing_scenario_does_not_promote_heals(tmp_path):
                                   "maxlength": "", "minlength": "", "min": "", "max": ""},
         },
     )
+    # required=True so step 1 is a non-skippable blocker — pins that
+    # promotion is correctly withheld on a real run failure (not on a
+    # skip).
     fp_nonexistent = _fp(
         "el-bogus",
         primary_strategy="id", primary_value="nope_does_not_exist",
         attrs={
             "tag": "input", "type": "text",
             "nearest_label_text": "Nothing Like This",
-            "html5_constraints": {"pattern": "", "required": False,
+            "html5_constraints": {"pattern": "", "required": True,
                                   "maxlength": "", "minlength": "", "min": "", "max": ""},
         },
     )
@@ -298,13 +305,19 @@ async def test_replay_with_force_runner_up_uses_second_best(tmp_path):
     page_path.write_text(html, encoding="utf-8")
     url = "file://" + str(page_path).replace("\\", "/")
 
+    # required=True so the default-replay path runs the failure branch
+    # (which sets heal_diagnostics), letting the test assert the top_k
+    # ordering surfaced in diagnostics. An optional fill would now skip
+    # via the skip-and-continue path and skip-results carry the diagnostic
+    # under `removal_diagnostics` instead — which would be a different
+    # contract for the runner-up retry.
     fp = _fp(
         "el-phone",
         primary_strategy="id", primary_value="phone",  # doesn't exist on page
         attrs={
             "tag": "input", "type": "text", "id": "phone", "name": "phone",
             "nearest_label_text": "Phone", "autocomplete": "tel",
-            "html5_constraints": {"pattern": "", "required": False,
+            "html5_constraints": {"pattern": "", "required": True,
                                   "maxlength": "", "minlength": "", "min": "", "max": ""},
         },
     )

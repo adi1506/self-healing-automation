@@ -61,6 +61,43 @@ def test_step_with_action_fill():
     assert s.value == "ABCDE1234F"
     assert s.revealed_elements == []
     assert s.network == []
+    # Default for needs_manual: off, so the vast majority of steps replay
+    # automatically without triggering the manual-assist pause.
+    assert s.needs_manual is False
+
+
+def test_step_needs_manual_round_trip():
+    s = Step(
+        index=2,
+        action="fill",
+        element=_fp("el-9", "enteredCaptcha"),
+        value="2cx4e",
+        needs_manual=True,
+    )
+    s2 = Step.from_dict(s.to_dict())
+    assert s2.needs_manual is True
+    assert s2 == s
+
+
+def test_step_needs_manual_missing_in_old_recording_defaults_false():
+    """Older recordings serialised before this field existed must load
+    without exploding and default to needs_manual=False — otherwise every
+    existing recording would suddenly grow a manual-assist banner on load."""
+    legacy_dict = {
+        "index": 0,
+        "action": "fill",
+        "element": None,
+        "value": "x",
+        "timestamp_ms": 0,
+        "revealed_elements": [],
+        "hidden_elements": [],
+        "network": [],
+        "error_elements": [],
+        "inserted_by": None,
+        # no needs_manual key
+    }
+    s = Step.from_dict(legacy_dict)
+    assert s.needs_manual is False
 
 
 def test_step_with_action_navigate_has_no_element():

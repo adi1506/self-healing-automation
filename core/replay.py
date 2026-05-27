@@ -37,6 +37,13 @@ class HealContext:
     fingerprints captured just before a submit-like action runs. A
     downstream failure can diff against this state to identify newly
     required fields that the recording never knew to fill.
+
+    `pre_submit_schema_snapshot` maps step index -> list of ALL-field
+    fingerprints captured just before a submit-like action runs (via
+    scanAll, not scanRequiredFields). Used by the post-run schema diff
+    against Recording.record_time_fields to surface fields added to the
+    form after the recording was made — including optional ones, which
+    `pre_submit_snapshot` misses.
     """
     action: str = ""
     ai_matcher: object | None = None
@@ -44,6 +51,7 @@ class HealContext:
     last_decision: Optional[HealDecision] = None
     force_runner_up: dict[str, int] = field(default_factory=dict)
     pre_submit_snapshot: dict[int, list[dict]] = field(default_factory=dict)
+    pre_submit_schema_snapshot: dict[int, list[dict]] = field(default_factory=dict)
 
 
 def _locator_for(page: Page, locator: dict) -> Locator:
@@ -62,11 +70,19 @@ def _locator_for(page: Page, locator: dict) -> Locator:
     raise ValueError(f"unknown locator strategy: {strategy!r}")
 
 
-def _is_step_skippable(step: Step) -> bool:
+def _is_step_skippable(step: Step, next_step: Step | None = None) -> bool:
     """Decide whether a missing-element failure on this step is safe to skip.
 
     Rule:
-      - click/submit/navigate/wait/press -> never skippable (flow-advancing)
+      - submit/navigate/wait/press/hover -> never skippable (flow-advancing)
+      - click on a button/link/etc. -> blocker (advances the flow)
+      - click on a form input/textarea/select that is immediately followed
+        by a fill/select/check/uncheck on the SAME fingerprint id ->
+        skippable. The recorder captures a focus-click (tab/mouse into
+        field) before typing; if the element is gone, dropping the click
+        is safe — the next step carries the real intent and is itself
+        evaluated for skippability.
+      - click on a form input with no same-element follow-up -> blocker
       - select/check/uncheck on a required field -> blocker
       - select/check/uncheck on an optional field -> skippable
       - fill on an optional field -> skippable
@@ -80,7 +96,19 @@ def _is_step_skippable(step: Step) -> bool:
     """
     if step.element is None:
         return False
-    if step.action in ("click", "submit", "navigate", "wait", "press"):
+    if step.action in ("submit", "navigate", "wait", "press", "hover"):
+        return False
+
+    if step.action == "click":
+        if (
+            next_step is not None
+            and next_step.element is not None
+            and next_step.element.id == step.element.id
+            and next_step.action in ("fill", "select", "check", "uncheck")
+        ):
+            tag = (step.element.attributes.get("tag") or "").lower()
+            if tag in ("input", "textarea", "select"):
+                return True
         return False
 
     constraints = step.element.attributes.get("html5_constraints") or {}
@@ -180,6 +208,115 @@ async def find_element_by_fingerprint(
         await page.wait_for_timeout(poll_ms)
 
 
+async def _await_manual_resume(page: Page, step: "Step") -> None:
+    """Pause the replay and surface an on-page banner with a Resume button.
+
+    Used for steps marked `needs_manual=True` (captcha, OTP, security
+    questions). The replay is meant to be running in headed mode here, so the
+    user can see the page, perform whatever interaction the step needs (e.g.
+    type the live captcha into the field themselves), and then click the
+    banner's Resume button. The replay then skips the step's automatic
+    action — the human has already done whatever was needed — and proceeds
+    to the next step.
+
+    The banner is injected via `page.evaluate`, lives in a fixed-position
+    overlay so the rest of the page stays interactive, and removes itself on
+    Resume. We wait on a JS sentinel (`window.__sha_manual_resumed`) using
+    `wait_for_function` with no timeout — the user takes as long as they
+    take. No subprocess/Streamlit IPC is needed: everything happens inside
+    the Playwright browser the user is already looking at.
+    """
+    field_label = ""
+    if step.element is not None:
+        attrs = step.element.attributes or {}
+        field_label = (
+            attrs.get("nearest_label_text")
+            or attrs.get("aria_label")
+            or attrs.get("placeholder")
+            or attrs.get("name")
+            or step.element.primary_locator.get("value", "")
+            or ""
+        )
+    safe_label = (field_label or step.action).replace("`", "'").replace("\\", "\\\\")
+    safe_action = step.action.replace("`", "'")
+    await page.evaluate(
+        """([action, label]) => {
+            // Drop any prior banner from an earlier paused step.
+            const prev = document.getElementById('__sha_manual_banner');
+            if (prev) prev.remove();
+            window.__sha_manual_resumed = false;
+
+            const div = document.createElement('div');
+            div.id = '__sha_manual_banner';
+            div.style.cssText = [
+                'position:fixed', 'top:16px', 'right:16px', 'z-index:2147483647',
+                'background:#fff8d1', 'border:2px solid #b8860b', 'border-radius:10px',
+                'padding:14px 18px', 'font-family:system-ui,sans-serif', 'font-size:14px',
+                'color:#222', 'box-shadow:0 8px 24px rgba(0,0,0,0.25)', 'max-width:360px',
+            ].join(';');
+            div.innerHTML =
+                '<div style="font-weight:700;font-size:15px;margin-bottom:6px">' +
+                '⏸ Replay paused — manual step</div>' +
+                '<div style="margin-bottom:10px;line-height:1.4">' +
+                'This step (<code>' + action + '</code> on <b>' + label + '</b>) ' +
+                'can\\'t be replayed automatically (captcha, OTP, etc.). ' +
+                'Complete it in the page yourself, then click Resume.</div>' +
+                '<button id="__sha_resume_btn" style="background:#0a5aa5;color:#fff;' +
+                'border:none;border-radius:6px;padding:8px 16px;font-size:14px;' +
+                'cursor:pointer;font-weight:600">Resume automation ▶</button>';
+            document.body.appendChild(div);
+            document.getElementById('__sha_resume_btn').addEventListener('click', () => {
+                window.__sha_manual_resumed = true;
+                div.remove();
+            });
+        }""",
+        [safe_action, safe_label],
+    )
+    # No timeout — the human takes as long as they need.
+    await page.wait_for_function(
+        "() => window.__sha_manual_resumed === true", timeout=0
+    )
+
+
+async def _pick_user_visible_target(loc):
+    """Choose the locator match that the user actually interacts with.
+
+    Some pages render the same form/component twice in the DOM at identical
+    coordinates (React StrictMode double-mount, SSR/CSR hydration leftovers,
+    routes mounting the same child twice). Both copies pass every standard
+    visibility check — `is_visible`, `:visible`, bbox, computed style — yet
+    only one of them is on top at its center; the other is occluded. Playwright's
+    `loc.first` picks the first match in DOM order, which can be the covered
+    copy, causing fills/clicks to "succeed" against an invisible element.
+
+    `document.elementFromPoint(centerX, centerY)` is the only reliable
+    disambiguator. When `count == 1` (the overwhelmingly common case) we skip
+    the check and return `loc.first` directly — one extra count() roundtrip,
+    no per-handle work. When no candidate is topmost (off-screen, covered by
+    an overlay, inside an iframe), we fall back to `loc.first` so behavior
+    is never worse than before.
+    """
+    n = await loc.count()
+    if n <= 1:
+        return loc.first
+    for i in range(n):
+        try:
+            is_top = await loc.nth(i).evaluate(
+                """el => {
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return false;
+                    const cx = r.left + r.width / 2;
+                    const cy = r.top + r.height / 2;
+                    return document.elementFromPoint(cx, cy) === el;
+                }"""
+            )
+        except Exception:
+            continue
+        if is_top:
+            return loc.nth(i)
+    return loc.first
+
+
 async def execute_step(
     page: Page,
     step: Step,
@@ -232,19 +369,62 @@ async def execute_step(
             heal_context.pre_submit_snapshot[step.index] = required_list
         except Exception:
             pass  # Non-fatal — scan failure shouldn't abort the step.
+        # Full-form schema snapshot for the post-run schema diff against
+        # Recording.record_time_fields. Distinct from pre_submit_snapshot
+        # (which is required-only); this one catches optional new fields.
+        try:
+            schema_list = await page.evaluate("window.__sha.scanAll()")
+            heal_context.pre_submit_schema_snapshot[step.index] = schema_list
+        except Exception:
+            pass
 
+    target = await _pick_user_visible_target(loc)
+    if step.needs_manual:
+        # Human performs this step manually. We resolved the locator so the
+        # healer's pre-action scans (URL match, action-compat guard) still
+        # run as guardrails, but the user types the captcha/OTP themselves.
+        await _await_manual_resume(page, step)
+        return
     if step.action == "fill":
-        await loc.first.fill(value or "")
+        await target.fill(value or "")
     elif step.action == "click" or step.action == "submit":
-        await loc.first.click()
+        # Flyout submenu items frequently have zero-height/zero-width <a>
+        # wrappers — the visible click area lives on a sibling/parent, but the
+        # <a> is what carries the href and what the user "clicked" at record
+        # time. force=True skips actionability checks but Playwright still
+        # tries scrollIntoView, which can't anchor on a zero-size box and then
+        # fails with "Element is outside of the viewport". Dispatch the click
+        # in JS instead — for <a href> this triggers native navigation just
+        # like a user click. See dogfood-output/hover_proto_results.md.
+        bbox = (step.element.attributes.get("bbox") or {}) if step.element else {}
+        zero_bbox = (
+            isinstance(bbox, dict)
+            and (float(bbox.get("width") or 0) == 0 or float(bbox.get("height") or 0) == 0)
+        )
+        if zero_bbox:
+            await target.evaluate("el => el.click()")
+        else:
+            await target.click()
+    elif step.action == "hover":
+        # Hover steps materialize flyouts, tooltips, etc. that subsequent
+        # clicks depend on. Captured by the recorder's hover-chain detector
+        # (see core/capture/inject.js `_detectHoverChain`).
+        await target.hover()
+        # Many menu frameworks debounce open (Ant Design's mouseEnterDelay
+        # defaults to ~100ms) and then play a short open animation. Without
+        # this settle wait, the next step's locator probes the DOM before the
+        # flyout is attached and fails with ElementNotFound. 500ms covers the
+        # common cases (Ant, MUI, Bootstrap, plain CSS transitions) without
+        # being long enough to feel sluggish.
+        await page.wait_for_timeout(500)
     elif step.action == "select":
-        await loc.first.select_option(value or "")
+        await target.select_option(value or "")
     elif step.action == "check":
-        await loc.first.check()
+        await target.check()
     elif step.action == "uncheck":
-        await loc.first.uncheck()
+        await target.uncheck()
     elif step.action == "press":
-        await loc.first.press(value or "")
+        await target.press(value or "")
     else:
         raise ValueError(f"unsupported action: {step.action!r}")
 
@@ -404,10 +584,16 @@ def _save_auto_filled_steps(
     scenario,
     recording_id: str,
     auto_filled: list[dict],
-    insert_before_step_index: int,
+    insert_before_step_index: int = 0,
 ) -> None:
     """Insert AI-suggested fill steps into the recording on the scenario,
-    persist the scenario. Each inserted step is marked inserted_by='auto-heal'."""
+    persist the scenario. Each inserted step is marked inserted_by='auto-heal'.
+
+    Each `auto_filled` entry may carry its own `insert_before_step_index`
+    (set by the wrapper). The top-level `insert_before_step_index` arg is
+    a fallback for entries that don't carry their own — kept for
+    backwards-compat with callers built around the reactive path's single
+    submit-step assumption."""
     from core.recording import Recording, Step, ElementFingerprint
     from core.scenarios import save_scenario
 
@@ -417,8 +603,23 @@ def _save_auto_filled_steps(
     if rec_dict is None:
         return
     rec = Recording.from_dict(rec_dict)
-    insert_at = max(0, insert_before_step_index)
-    for af in auto_filled:
+    # Sort entries by their target insertion index so insertions on later
+    # indices don't shift earlier ones around unexpectedly.
+    sorted_fills = sorted(
+        auto_filled,
+        key=lambda af: af.get("insert_before_step_index", insert_before_step_index),
+    )
+    bumped = 0  # how many steps we've already inserted before this point
+    last_idx = -1
+    for af in sorted_fills:
+        target = af.get("insert_before_step_index", insert_before_step_index)
+        if target == last_idx:
+            # Multiple fills targeting the same submit step → keep them
+            # contiguous, in the order they came in.
+            insert_at = max(0, target) + bumped
+        else:
+            insert_at = max(0, target) + bumped
+            last_idx = target
         new_step = Step(
             index=0,  # rewritten below
             action="fill",
@@ -433,7 +634,7 @@ def _save_auto_filled_steps(
             inserted_by="auto-heal",
         )
         rec.steps.insert(insert_at, new_step)
-        insert_at += 1
+        bumped += 1
     for i, s in enumerate(rec.steps):
         s.index = i
     for i, r in enumerate(scenario.recordings):
@@ -441,6 +642,77 @@ def _save_auto_filled_steps(
             scenario.recordings[i] = rec.to_dict()
             break
     save_scenario("data/scenarios", scenario)
+
+
+def _schema_diff_new_fields(
+    *,
+    record_time_fields: list[dict],
+    pre_submit_schema_snapshot: dict[int, list[dict]],
+    already_detected_keys: set[tuple[str, str]],
+) -> list[dict]:
+    """Diff the live-scan schema against the recording's record_time_fields.
+
+    Anything present in the live scan whose (name, nearest_label_text) does
+    NOT match any record-time entry (exact, then fuzzy >= 0.85 on label) is
+    treated as "newly added since recording." Each returned entry carries
+    is_required read from the LIVE DOM (not the recording), since required-
+    ness can change independently of existence.
+
+    `already_detected_keys` is the set of (name, label) tuples already
+    surfaced by other detection paths (post-submit-error, pre-submit-diff).
+    Entries matching one of those are skipped to avoid duplicates.
+    """
+    from difflib import SequenceMatcher
+
+    record_names = {
+        (rf.get("name") or "").strip().lower()
+        for rf in record_time_fields
+        if (rf.get("name") or "").strip()
+    }
+    record_labels = [
+        (rf.get("nearest_label_text") or "").strip().lower()
+        for rf in record_time_fields
+        if (rf.get("nearest_label_text") or "").strip()
+    ]
+
+    def _has_match(name: str, label: str) -> bool:
+        n = name.strip().lower()
+        l = label.strip().lower()
+        if n and n in record_names:
+            return True
+        if l:
+            if l in record_labels:
+                return True
+            # Fuzzy on label — fields often share name but labels rephrase
+            for rl in record_labels:
+                if SequenceMatcher(None, l, rl).ratio() >= 0.85:
+                    return True
+        return False
+
+    new_entries: list[dict] = []
+    seen_keys: set[tuple[str, str]] = set(already_detected_keys)
+    for submit_idx, current_fields in pre_submit_schema_snapshot.items():
+        for fp in current_fields:
+            attrs = fp.get("attributes") or {}
+            name = (attrs.get("name") or "").strip()
+            label = (attrs.get("nearest_label_text") or "").strip()
+            if not name and not label:
+                # No identity beyond locator — can't meaningfully diff.
+                continue
+            if _has_match(name, label):
+                continue
+            key = (name.lower(), label.lower())
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            new_entries.append({
+                "fingerprint": fp,
+                "error_text": "",
+                "discovery": "schema_diff",
+                "submit_step_index": submit_idx,
+                "is_required": bool(attrs.get("is_required", False)),
+            })
+    return new_entries
 
 
 def _prune_replay_runs(recording_dir: str, keep: int = 5) -> None:
@@ -485,6 +757,13 @@ async def replay_recording(
     """
     overrides = data_overrides or {}
     outcome = ReplayOutcome()
+
+    # A step marked needs_manual pauses replay and asks the user to act in
+    # the page. That's impossible if the browser isn't visible, so override
+    # headless when any step requires it. The caller's intent (headless=True
+    # from CI etc.) is respected for recordings with no manual steps.
+    if headless and any(getattr(s, "needs_manual", False) for s in recording.steps):
+        headless = False
 
     run_dir: Optional[str] = None
     if screenshot_dir:
@@ -572,16 +851,41 @@ async def replay_recording(
                             }
                             outcome.healed_steps += 1
                 except Exception as e:
-                    # Distinguish "field looked removed AND skip is safe"
-                    # from a real failure. The healer writes its decision
-                    # to heal_context.last_decision; if that's
-                    # `field_removed` AND _is_step_skippable says yes,
-                    # record a warning and continue the loop.
+                    # Skip-and-continue policy: any heal verdict that means
+                    # "we couldn't find this element" — `field_removed` OR
+                    # `unresolved` — is safe to skip iff `_is_step_skippable`
+                    # says yes (optional fills/toggles, never click/submit).
+                    # The two verdicts mean different things and the report
+                    # surfaces them with distinct copy:
+                    #   - field_removed: scan found nothing close → field
+                    #     looks deleted from the page
+                    #   - unresolved:    scan found something close-ish but
+                    #     not confident enough to commit a heal
+                    # Blocker steps (click/submit/required-fill) still fail
+                    # regardless of which verdict fired — the manual-fix CTA
+                    # path remains the recovery route.
                     last = heal_context.last_decision if heal_context else None
-                    is_removed = last is not None and last.method == "field_removed"
-                    if is_removed and _is_step_skippable(step):
-                        result["status"] = "skipped_removed"
+                    last_method = last.method if last else None
+                    skip_reason: Optional[str] = None
+                    if last_method == "field_removed":
+                        skip_reason = "field_removed"
+                    elif last_method == "unresolved":
+                        skip_reason = "unresolved"
+
+                    next_step = (
+                        recording.steps[step.index + 1]
+                        if step.index + 1 < len(recording.steps)
+                        else None
+                    )
+                    if skip_reason and _is_step_skippable(step, next_step):
+                        status_value = (
+                            "skipped_removed"
+                            if skip_reason == "field_removed"
+                            else "skipped_unresolved"
+                        )
+                        result["status"] = status_value
                         result["error"] = None
+                        result["skip_reason"] = skip_reason
                         attrs = step.element.attributes if step.element else {}
                         field_label = (
                             attrs.get("nearest_label_text")
@@ -595,6 +899,7 @@ async def replay_recording(
                             "fingerprint_id": step.element.id if step.element else "",
                             "field_label": field_label,
                             "diagnostics": last.diagnostics,
+                            "reason": skip_reason,
                         }
                         outcome.skipped_steps.append(skip_entry)
                         result["removal_diagnostics"] = last.diagnostics
@@ -646,6 +951,11 @@ async def replay_recording(
                                     new_required.append({
                                         "fingerprint": req,
                                         "error_text": err_text,
+                                        "discovery": "post_submit_failure",
+                                        "submit_step_index": prev_step.index,
+                                        # pre_submit_snapshot is scanRequiredFields
+                                        # output — required by definition.
+                                        "is_required": True,
                                     })
                                 outcome.new_required_fields_detected = new_required
                             except Exception:
@@ -669,6 +979,77 @@ async def replay_recording(
         _prune_replay_runs(screenshot_dir, keep=5)
 
     outcome.run_id = uuid.uuid4().hex[:12]
+
+    # Proactive new-required-field detection (the "broadened trigger").
+    # The reactive path above populates new_required_fields_detected only
+    # when a submit click was followed by a failure. That misses forms
+    # where the new field is required by the schema but the browser/server
+    # didn't block submit (no `required` attribute on the input, server
+    # silently accepts, etc.). After a passing run we do the same diff
+    # — pre_submit_snapshot ∩ unfilled-by-recording — and surface any
+    # remaining gap so the UI can offer "Add this step?" even on a green run.
+    if (
+        heal_context is not None
+        and outcome.failed_step_index is None
+        and not outcome.new_required_fields_detected
+        and heal_context.pre_submit_snapshot
+    ):
+        filled_fp_ids = {
+            s.element.id for s in recording.steps
+            if s.element is not None and s.action in ("fill", "select", "check")
+        }
+        proactive: list[dict] = []
+        seen_fp_ids: set[str] = set()
+        for submit_idx, pre_required in heal_context.pre_submit_snapshot.items():
+            for req in pre_required:
+                if not req.get("is_empty"):
+                    continue
+                fp_id = req.get("id")
+                if not fp_id or fp_id in filled_fp_ids or fp_id in seen_fp_ids:
+                    continue
+                seen_fp_ids.add(fp_id)
+                proactive.append({
+                    "fingerprint": req,
+                    "error_text": "",
+                    "discovery": "pre_submit_diff",
+                    "submit_step_index": submit_idx,
+                    # scanRequiredFields output — required by definition.
+                    "is_required": True,
+                })
+        if proactive:
+            outcome.new_required_fields_detected = proactive
+
+    # Schema diff against Recording.record_time_fields (snapshot taken at
+    # recording-save time). Catches fields added to the form since the
+    # recording was made, including optional ones that scanRequiredFields
+    # would miss. Fires regardless of failure state — both passing and
+    # failing runs benefit from surfacing newly-added fields.
+    #
+    # Recordings made before this feature shipped have an empty
+    # record_time_fields list; in that case we skip the diff so we don't
+    # surface every field on the page as "new."
+    if (
+        heal_context is not None
+        and recording.record_time_fields
+        and heal_context.pre_submit_schema_snapshot
+    ):
+        already_keys: set[tuple[str, str]] = set()
+        for nr in outcome.new_required_fields_detected:
+            fp = nr.get("fingerprint") or {}
+            attrs = fp.get("attributes") or {}
+            already_keys.add((
+                (attrs.get("name") or "").strip().lower(),
+                (attrs.get("nearest_label_text") or "").strip().lower(),
+            ))
+        new_via_schema = _schema_diff_new_fields(
+            record_time_fields=recording.record_time_fields,
+            pre_submit_schema_snapshot=heal_context.pre_submit_schema_snapshot,
+            already_detected_keys=already_keys,
+        )
+        if new_via_schema:
+            outcome.new_required_fields_detected = (
+                list(outcome.new_required_fields_detected) + new_via_schema
+            )
 
     if (
         promote_on_pass
@@ -704,14 +1085,28 @@ async def replay_recording_with_auto_fill(
     recording_path: str | None = None,
     promote_on_pass: bool = True,
     force_runner_up: dict[str, int] | None = None,
+    auto_fill_overrides: dict[str, str] | None = None,
 ) -> ReplayOutcome:
-    """Wrap replay_recording with an auto-retry path: if the first attempt
-    fails and `new_required_fields_detected` is non-empty, AI-fill those
-    fields and re-run with them inserted before the failing submit step.
-    The outcome.auto_filled_fields list records what was filled so the UI
-    can offer 'Save this step.'"""
+    """Wrap replay_recording with an auto-retry path.
+
+    Two surfaces:
+      - **Reactive** (submit failed + new required field detected): rerun
+        the scenario with an AI-filled fill-step inserted before the submit.
+        Show success/failure banner with the value(s) used.
+      - **Proactive** (submit passed but pre-submit scan vs. recording diff
+        revealed an unfilled required field): no rerun — the run already
+        passed without it. Surface the field with an AI-suggested value so
+        the user can add it to the recording with one click.
+
+    `auto_fill_overrides` is `{fingerprint_id: user_supplied_value}`. When
+    present, the wrapper uses these values instead of `value_for_field` for
+    the matching fingerprints. Lets the failure-banner "Edit & Retry" flow
+    feed a user-corrected value back into the rerun.
+    """
     from copy import deepcopy
     from core.ai_test_data import value_for_field
+
+    overrides_map = dict(auto_fill_overrides or {})
 
     outcome = await replay_recording(
         recording,
@@ -728,12 +1123,37 @@ async def replay_recording_with_auto_fill(
     )
     outcome.auto_filled_fields = []
 
-    if outcome.failed_step_index is None or not outcome.new_required_fields_detected:
-        # No retry needed — either it passed or the failure isn't a missing field.
+    if not outcome.new_required_fields_detected:
         return outcome
 
-    # Build an extended recording with inserted fill-steps before the failing
-    # submit step.
+    # Proactive: scenario passed end-to-end but pre-submit diff flagged
+    # unfilled required fields. No rerun — just surface the AI suggestion.
+    if outcome.failed_step_index is None:
+        proactive_fills: list[dict] = []
+        for nr in outcome.new_required_fields_detected:
+            fp_dict = nr["fingerprint"]
+            attrs = fp_dict.get("attributes") or {}
+            fp_id = fp_dict["id"]
+            value = overrides_map.get(fp_id) or value_for_field(attrs)
+            proactive_fills.append({
+                "fingerprint_id": fp_id,
+                "value": value,
+                "attributes": attrs,
+                "primary_locator": fp_dict["primary_locator"],
+                "fallback_locators": fp_dict.get("fallback_locators", []),
+                "source": (
+                    "user_override" if fp_id in overrides_map
+                    else "ai_test_data.value_for_field"
+                ),
+                "was_filled_in_run": False,
+                "insert_before_step_index": nr.get("submit_step_index", 0),
+                "discovery": nr.get("discovery", "pre_submit_diff"),
+                "is_required": bool(nr.get("is_required", False)),
+            })
+        outcome.auto_filled_fields = proactive_fills
+        return outcome
+
+    # Reactive: failure path. Rerun with fill-steps inserted before submit.
     retry_rec = deepcopy(recording)
     failed_idx = outcome.failed_step_index
     # The failing step is the one AFTER the submit. We want to insert before
@@ -743,13 +1163,14 @@ async def replay_recording_with_auto_fill(
     for nr in outcome.new_required_fields_detected:
         fp_dict = nr["fingerprint"]
         attrs = fp_dict.get("attributes") or {}
-        value = value_for_field(attrs)
+        fp_id = fp_dict["id"]
+        value = overrides_map.get(fp_id) or value_for_field(attrs)
         new_step = Step(
             index=0,  # rewritten below
             action="fill",
             value=value,
             element=ElementFingerprint.from_dict({
-                "id": fp_dict["id"],
+                "id": fp_id,
                 "primary_locator": fp_dict["primary_locator"],
                 "fallback_locators": fp_dict.get("fallback_locators", []),
                 "attributes": attrs,
@@ -760,12 +1181,19 @@ async def replay_recording_with_auto_fill(
         retry_rec.steps.insert(insert_at, new_step)
         insert_at += 1
         auto_fills.append({
-            "fingerprint_id": fp_dict["id"],
+            "fingerprint_id": fp_id,
             "value": value,
             "attributes": attrs,
             "primary_locator": fp_dict["primary_locator"],
             "fallback_locators": fp_dict.get("fallback_locators", []),
-            "source": "ai_test_data.value_for_field",
+            "source": (
+                "user_override" if fp_id in overrides_map
+                else "ai_test_data.value_for_field"
+            ),
+            "was_filled_in_run": True,
+            "insert_before_step_index": insert_at - 1,
+            "discovery": nr.get("discovery", "post_submit_failure"),
+            "is_required": bool(nr.get("is_required", False)),
         })
     # Renumber step indices
     for i, s in enumerate(retry_rec.steps):

@@ -93,7 +93,7 @@ class NetworkCapture:
 @dataclass
 class Step:
     index: int
-    action: str  # "fill" | "click" | "select" | "check" | "uncheck" | "press" | "navigate" | "wait"
+    action: str  # "fill" | "click" | "hover" | "select" | "check" | "uncheck" | "press" | "navigate" | "wait"
     element: Optional[ElementFingerprint] = None
     value: Optional[str] = None
     timestamp_ms: int = 0
@@ -102,6 +102,12 @@ class Step:
     network: list[NetworkCapture] = field(default_factory=list)
     error_elements: list[ElementFingerprint] = field(default_factory=list)
     inserted_by: Optional[str] = None  # "auto-heal" | "user_edit" | None (captured)
+    # When True, replay pauses at this step and shows an in-page banner with
+    # a Resume button. Used for fields that can't be replayed automatically
+    # (captcha, OTP, security questions). Auto-detected at record time from
+    # field name/placeholder/label; user can override in the recording editor.
+    # A True value on any step forces the replay browser to launch headed.
+    needs_manual: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -115,6 +121,7 @@ class Step:
             "network": [n.to_dict() for n in self.network],
             "error_elements": [e.to_dict() for e in self.error_elements],
             "inserted_by": self.inserted_by,
+            "needs_manual": self.needs_manual,
         }
 
     @classmethod
@@ -130,6 +137,7 @@ class Step:
             network=[NetworkCapture.from_dict(n) for n in d.get("network", [])],
             error_elements=[ElementFingerprint.from_dict(e) for e in d.get("error_elements", [])],
             inserted_by=d.get("inserted_by"),
+            needs_manual=bool(d.get("needs_manual", False)),
         )
 
 
@@ -170,6 +178,13 @@ class Recording:
     success_signal: Optional[SuccessSignal] = None
     healed_at: Optional[str] = None
     acknowledged_missing_required: list[str] = field(default_factory=list)
+    # Snapshot of the form schema at recording-save time. Each entry is a slim
+    # fingerprint: id, name, nearest_label_text, autocomplete, tag, is_required.
+    # Replay-time schema diff against this list surfaces fields added after the
+    # recording was made (regardless of whether they're marked required).
+    # Older recordings load with this empty — schema diff is skipped for them
+    # and only the existing required-field detection fires.
+    record_time_fields: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -183,6 +198,7 @@ class Recording:
             "success_signal": self.success_signal.to_dict() if self.success_signal else None,
             "healed_at": self.healed_at,
             "acknowledged_missing_required": list(self.acknowledged_missing_required),
+            "record_time_fields": [dict(f) for f in self.record_time_fields],
         }
 
     @classmethod
@@ -198,6 +214,7 @@ class Recording:
             success_signal=SuccessSignal.from_dict(d["success_signal"]) if d.get("success_signal") else None,
             healed_at=d.get("healed_at"),
             acknowledged_missing_required=list(d.get("acknowledged_missing_required", [])),
+            record_time_fields=[dict(f) for f in d.get("record_time_fields", [])],
         )
 
 

@@ -27,7 +27,13 @@ from core.recording import ElementFingerprint
 # --- Decision thresholds --------------------------------------------------
 SCORE_THRESHOLD = 0.80   # top match must clear this to auto-heal
 GRAY_LOW = 0.55          # below this, no AI consultation either
-REMOVED_FLOOR = 0.40     # below this AND rename-guard fails → field appears removed
+# Tied to GRAY_LOW (not a separate lower floor). Anything that doesn't reach
+# AI consultation is a removed-field candidate, gated by the rename-guard.
+# Earlier this was 0.40, leaving a dead zone [0.40, 0.55) where a step
+# couldn't be healed AND couldn't be classified removed — so the skip-and-
+# continue path in core.replay never fired. Collapsing the dead zone lets
+# `_is_step_skippable` make the call.
+REMOVED_FLOOR = GRAY_LOW
 MARGIN_REQ = 0.10        # top must beat runner-up by at least this
 AUTO_PERSIST_THRESHOLD = 0.90   # stricter bar for opt-in auto-write-back
 
@@ -145,6 +151,13 @@ def is_action_compatible(action: str, fp: ElementFingerprint) -> bool:
         if tag == "input" and typ in ("submit", "button"):
             return True
         return role in ("button", "link")
+    if action == "hover":
+        # Hover trigger can be ANY element with a mouseenter handler — most
+        # commonly a <div>/<li>/<a> menu item. Be permissive: accept any
+        # element that's plausibly user-visible. The locator/identity carries
+        # the discrimination; we don't want to falsely reject sidebar items
+        # just because they're <div>s.
+        return True
     if action == "press":
         # `press` can target any focusable; be permissive.
         return True

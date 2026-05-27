@@ -201,12 +201,11 @@ def test_select_match_picks_high_confidence_with_margin():
 
 
 def test_select_match_unresolved_when_top_is_low():
-    # When all candidates score below REMOVED_FLOOR (0.40) AND the
-    # rename-guard misses, the new classification is `field_removed` —
-    # the field appears genuinely gone from the page, not just renamed.
-    # The historical "unresolved" outcome for this scenario is now
-    # `field_removed`; see test_select_match_gray_zone_unchanged for the
-    # current `unresolved` case (gray zone, not below floor).
+    # When all candidates score below REMOVED_FLOOR AND the rename-guard
+    # misses, classification is `field_removed` — the field appears
+    # genuinely gone, not just renamed. REMOVED_FLOOR is tied to GRAY_LOW
+    # (no dead zone), so any score that didn't reach AI consultation lands
+    # in this branch by default.
     stored = _fp(name="phone", type="tel", nearest_label_text="Phone Number")
     bad1 = _fp(name="email", type="email", nearest_label_text="Email")
     bad2 = _fp(name="zip", type="text", nearest_label_text="Zip")
@@ -464,10 +463,13 @@ def test_select_match_unresolved_not_field_removed_when_guard_hits():
 
 
 def test_select_match_gray_zone_unchanged():
-    """When the top score is above REMOVED_FLOOR (the field is NOT in the
-    'appears removed' band), classification falls through to the existing
-    gray-zone/margin/no-AI explanations and returns `unresolved` — never
-    `field_removed`. Pins that the new below-floor branch was not taken."""
+    """When the top score is in [REMOVED_FLOOR, SCORE_THRESHOLD) and AI is
+    off / unavailable, classification stays `unresolved` (gray zone with
+    no confirmation) and does NOT fall through to `field_removed`.
+
+    REMOVED_FLOOR is now tied to GRAY_LOW, so this also pins that the gray
+    zone is the only `unresolved` band — anything below GRAY_LOW becomes
+    `field_removed` (or rename-guard `unresolved` if guard fires)."""
     stored = _fp(name="phone", nearest_label_text="Phone Number", type="tel")
     candidates = [
         _fp(name="phone_secondary", nearest_label_text="Phone (alt)", type="tel"),

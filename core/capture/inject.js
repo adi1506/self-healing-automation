@@ -164,6 +164,20 @@
       css_path: cssPathOf(el),
       neighborhood_signature: neighborhoodSignature(el),
     };
+    // For SELECT elements, capture the visible option list so the recording
+    // editor can render a real dropdown (not just a free-text input). Each
+    // entry is {value, label} — `value` is what the form submits, `label` is
+    // what the user sees. Older recordings lack this key; the editor falls
+    // back to a text input when it's missing.
+    if (el.tagName === "SELECT") {
+      try {
+        attrs.select_options = Array.from(el.options).map(function (o) {
+          return { value: o.value, label: (o.text || "").trim() };
+        });
+      } catch (_) {
+        attrs.select_options = [];
+      }
+    }
     return {
       id,
       primary_locator: pickPrimaryLocator(el),
@@ -189,9 +203,177 @@
     });
   }
 
+  // --- Hover-chain detector ---------------------------------------
+  // Reconstructs the hover events that preceded a click, by tracking which
+  // DOM elements appeared post-arm and what the cursor was over at each
+  // insertion. Filters out click-driven insertions (so click-toggled menus
+  // don't generate phantom hovers) and walks the chain recursively so
+  // cascading menus produce one hover step per level.
+  //
+  // Design + measured false-positive numbers: see tests/hover_prototype.py
+  // and dogfood-output/hover_proto_results.md.
+  const _hover = {
+    armed: false,
+    insertion_ts: new WeakMap(),  // element -> ms-since-arm; 0 means preexisting
+    click_driven: new WeakMap(),  // element -> true if inserted within CLICK_ATTRIBUTION_MS of a click
+    mutations: [],                // {ts, node, cursor_el}
+    cursor_el: null,
+    last_click_ts: 0,
+    // Tunables — same constants validated by the prototype battery
+    CLICK_ATTRIBUTION_MS: 250,
+    INSERTION_WINDOW_MS: 2000,
+  };
+
+  const _INTERACTIVE_TAGS = new Set(["button", "a", "input", "select", "textarea"]);
+  const _INTERACTIVE_ROLES = new Set([
+    "button", "link", "menuitem", "menuitemcheckbox", "menuitemradio",
+    "tab", "checkbox", "radio", "option", "switch",
+    // combobox: Ant/MUI/HeadlessUI <Select> triggers are <div role=combobox>.
+    // Without this the click that OPENS the dropdown is silently dropped
+    // and the subsequent option click happens on a popup the replay
+    // engine has no way to make appear. treeitem covers custom tree
+    // controls that follow the same pattern.
+    "combobox", "treeitem",
+  ]);
+
+  function _isInteractive(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (_INTERACTIVE_TAGS.has(el.tagName.toLowerCase())) return true;
+    const role = (el.getAttribute && el.getAttribute("role") || "").toLowerCase();
+    if (_INTERACTIVE_ROLES.has(role)) return true;
+    if (el.hasAttribute && el.hasAttribute("onclick")) return true;
+    return false;
+  }
+
+  function _nearestInteractive(el) {
+    let cur = el;
+    while (cur && cur.nodeType === 1 && cur !== document.body) {
+      if (_isInteractive(cur)) return cur;
+      cur = cur.parentNode;
+    }
+    return el;
+  }
+
+  // Same walk as _nearestInteractive but returns null when no interactive
+  // ancestor exists. Used by the click capture filter — we don't want to
+  // record clicks on bare divs/spans, but the legacy filter (button,a,
+  // [role=button],input[type=submit|button]) misses Ant Design Select
+  // triggers (role=combobox), options (role=option), tabs, custom
+  // checkboxes, etc. Using the same role set as _isInteractive keeps the
+  // hover-chain and click-capture views of "what's interactive" aligned.
+  function _nearestInteractiveOrNull(el) {
+    let cur = el;
+    while (cur && cur.nodeType === 1 && cur !== document.body) {
+      if (_isInteractive(cur)) return cur;
+      cur = cur.parentNode;
+    }
+    return null;
+  }
+
+  // Input types that ARE clickable buttons, not form-value fields. A click on
+  // these is a real user intent and must be recorded. Everything else under
+  // `<input>` (text, email, tel, number, date, color, range, checkbox, radio,
+  // password, search, url, time, ...) is a value field whose click is just
+  // focus and is followed by a `change` event recorded as fill/check/uncheck.
+  const _INPUT_BUTTON_TYPES = new Set(["submit", "button", "reset", "image", "file"]);
+
+  function _isFormValueTarget(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const tag = el.tagName;
+    if (tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (tag === "INPUT") {
+      const t = (el.getAttribute("type") || "text").toLowerCase();
+      return !_INPUT_BUTTON_TYPES.has(t);
+    }
+    return false;
+  }
+
+  function _armHoverDetector() {
+    if (_hover.armed) return;
+    if (!document.body) return;
+    _hover.armed = true;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, null);
+    let el = walker.currentNode;
+    let count = 0;
+    while (el) {
+      _hover.insertion_ts.set(el, 0);  // 0 = preexisting at arm time
+      count++;
+      if (count > 20000) break;
+      el = walker.nextNode();
+    }
+    // Cursor: precise updates on every element boundary (mouseenter); fallback mousemove.
+    document.addEventListener("mouseenter", (e) => {
+      if (e.target && e.target.nodeType === 1) _hover.cursor_el = e.target;
+    }, true);
+    document.addEventListener("mousemove", (e) => {
+      const t = document.elementFromPoint(e.clientX, e.clientY);
+      if (t) _hover.cursor_el = t;
+    }, true);
+    // Mutation observer: stamp insertion_ts; tag as click_driven if recent click
+    const mo = new MutationObserver((records) => {
+      const now = performance.now();
+      const click_driven = _hover.last_click_ts > 0
+        && (now - _hover.last_click_ts) <= _hover.CLICK_ATTRIBUTION_MS;
+      for (const r of records) {
+        if (r.type !== "childList") continue;
+        for (const node of r.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          const w = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT, null);
+          let n = w.currentNode;
+          let c = 0;
+          while (n) {
+            _hover.insertion_ts.set(n, now);
+            if (click_driven) _hover.click_driven.set(n, true);
+            c++;
+            if (c > 500) break;
+            n = w.nextNode();
+          }
+          _hover.mutations.push({ ts: now, node, cursor_el: _hover.cursor_el });
+        }
+      }
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // Returns an array of trigger ELEMENTS that need to be hovered before the click,
+  // outermost-first. Empty array = no hover needed.
+  function _detectHoverChain(clickTarget) {
+    if (!_hover.armed) return [];
+    const now = performance.now();
+    const chain = [];
+    const seen = new Set();
+    let current = _nearestInteractive(clickTarget);
+
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const inserted_at = _hover.insertion_ts.get(current);
+      if (inserted_at === undefined) break;          // untracked
+      if (inserted_at === 0) break;                  // preexisting at arm time
+      if ((now - inserted_at) > _hover.INSERTION_WINDOW_MS) break;
+      if (_hover.click_driven.get(current) === true) break;
+
+      // Find the mutation that introduced `current`
+      let m = null;
+      for (let i = _hover.mutations.length - 1; i >= 0; i--) {
+        const mm = _hover.mutations[i];
+        if (mm.node === current || (mm.node && mm.node.contains && mm.node.contains(current))) {
+          m = mm; break;
+        }
+      }
+      if (!m || !m.cursor_el) break;
+      const trigger = _nearestInteractive(m.cursor_el);
+      // Avoid emitting a hover whose trigger is the same as click target (degenerate)
+      if (trigger === clickTarget) break;
+      chain.unshift(trigger);
+      current = trigger;
+    }
+    return chain;
+  }
+
   function attachListeners() {
     if (window.__sha._attached) return;
     window.__sha._attached = true;
+    _armHoverDetector();
 
     document.addEventListener("change", (ev) => {
       const el = ev.target;
@@ -208,10 +390,48 @@
     }, true);
 
     document.addEventListener("click", (ev) => {
-      const el = ev.target.closest && ev.target.closest("button, a, [role=button], input[type=submit], input[type=button]");
+      // Stamp click time IMMEDIATELY (before any downstream insertion) so the
+      // MutationObserver can tag subsequent additions as click-driven and the
+      // next click won't misattribute them to a hover.
+      _hover.last_click_ts = performance.now();
+
+      const el = _nearestInteractiveOrNull(ev.target);
       if (!el) return;
+
+      // Reconstruct hover chain that preceded this click. Emit outermost
+      // hover first, then proceed to the click. Filter: skip empty chains
+      // (most clicks), skip self-referential triggers, dedupe consecutive.
+      try {
+        const chain = _detectHoverChain(el);
+        const seenPaths = new Set();
+        for (const trigger of chain) {
+          if (!trigger || trigger === el) continue;
+          // Dedupe by element identity to avoid double-emitting if the same
+          // trigger appears twice in a degenerate chain.
+          if (seenPaths.has(trigger)) continue;
+          seenPaths.add(trigger);
+          emit("hover", trigger, null);
+        }
+      } catch (e) {
+        // Hover detection must never break click recording. Swallow & continue.
+      }
+
       window.__sha._lastClickForm = el.closest ? el.closest("form") : null;
       window.__sha._lastClickAt = Date.now();
+
+      // Suppress clicks on form-value targets. These elements (`<input>`
+      // except submit/button/file/image/reset, `<textarea>`, `<select>`)
+      // emit a `change` event when the user enters/picks a value, which
+      // the recorder already captures as fill/select/check/uncheck on the
+      // same element. The leading click is functionally just focus, and
+      // recording it breaks heal on schema changes: the healer's
+      // `is_action_compatible(action="click")` rejects selects and text
+      // inputs as click targets, so a stray click step on those elements
+      // can never be relocated when the page is refactored.
+      // Real buttons, links, and `<input type=submit|button>` are still
+      // recorded — those are real user intents, not focus side-effects.
+      if (_isFormValueTarget(el)) return;
+
       emit("click", el, null);
     }, true);
 
@@ -272,7 +492,17 @@
       seen.add(el);
       try {
         const fp = buildFingerprint(el);
-        if (fp) out.push(fp);
+        if (fp) {
+          // Annotate with is_required so callers (record-time capture,
+          // replay-time schema diff) can tell required from optional
+          // without re-walking the DOM.
+          try {
+            fp.attributes.is_required = isFieldRequired(el);
+          } catch (_) {
+            fp.attributes.is_required = false;
+          }
+          out.push(fp);
+        }
       } catch (_) {
         // Skip elements that throw during fingerprinting — we'd rather
         // return a partial scan than fail the whole heal attempt.

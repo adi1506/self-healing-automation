@@ -245,26 +245,55 @@ Items 1-5 are the MVP. 6-7 make it usable long-term. 8-9 are quality and reach.
 - **Negative integration test**: a `v2_field_removed.html` variant — assert the removed field's step fails with `ElementNotFound: no candidate above floor`, not a wrong heal.
 - **Ambiguity test**: two "Phone Number" fields in different sections — assert section-scope filter routes the heal to the correct one.
 
-## 10. Removed-Field Handling
+## 10. Removed-Field and Unresolved-Field Handling
 
-When the healer's scan returns a top score below `REMOVED_FLOOR` (0.40) AND
-no candidate shares the stored fingerprint's `autocomplete` or non-generic
-`name` value (the rename-guard), the field is classified as `field_removed`
-rather than `unresolved`.
+The replay loop's skip-and-continue path fires on any heal verdict that
+means "we couldn't find this element" — either `field_removed` or
+`unresolved` — provided the step is skippable.
 
-The replay loop treats `field_removed` step failures differently based on
-the step's role:
+**Verdict classification** (in `core/replay_healer.select_match`):
 
-- **Skippable steps** (optional fills, optional toggles, required fills
-  with no recorded value) → recorded in `ReplayOutcome.skipped_steps`,
-  step status set to `skipped_removed`, loop continues
+- `field_removed` — top candidate scored below `REMOVED_FLOOR` AND the
+  rename-guard didn't fire. The field looks genuinely gone from the page.
+- `unresolved` — either (a) top score is in the gray zone
+  `[GRAY_LOW, SCORE_THRESHOLD)` and AI didn't confirm, (b) the margin over
+  the runner-up is too small, or (c) the rename-guard fired below
+  `REMOVED_FLOOR` (drastic rename suspected, fail-safe).
+
+`REMOVED_FLOOR` is tied to `GRAY_LOW` (no dead zone). Earlier versions set
+`REMOVED_FLOOR = 0.40` and `GRAY_LOW = 0.55`, which left a `[0.40, 0.55)`
+band where the healer returned `unresolved` but the skip-and-continue path
+didn't fire — every removal whose top accidental candidate scored 0.40-0.55
+became a hard run failure. The rename-guard is the safety mechanism;
+tightening the floor was redundant. Removing the dead zone gets the skip
+path back in business.
+
+**Skip vs. fail decision** (in `core.replay._is_step_skippable`):
+
+- **Skippable steps** (optional fills, optional selects/checks, required
+  fills with no recorded value) → recorded in
+  `ReplayOutcome.skipped_steps` with `reason` ∈ {`field_removed`,
+  `unresolved`}, step status set to `skipped_removed` or
+  `skipped_unresolved` respectively, loop continues.
 - **Blocker steps** (click, submit, navigate, press, required fills with
-  a recorded value, required toggles) → fail the run, surface "Add step
-  manually" CTA in the UI
+  a recorded value, required selects/checks) → fail the run regardless of
+  verdict. `field_removed` blockers also surface the "Add step manually"
+  CTA in the UI.
+- **Click-precursor exception**: a `click` whose target is an
+  `input`/`textarea`/`select` AND whose immediate next step targets the
+  *same* fingerprint id with a `fill`/`select`/`check`/`uncheck` is
+  treated as a recorder focus artefact (tab/click into field before
+  typing). It is skippable when the element is gone — the following step
+  carries the real intent and is itself evaluated for skippability on the
+  next loop iteration. Clicks on buttons, anchors, or any element with no
+  same-id follow-up remain blockers (they advance the flow).
 
-The 0.40–0.55 score band remains "unresolved" — that's the gray zone where
-we have *something* on the page but not confident enough to commit a heal.
-Skipping in that band would risk silently producing wrong behavior.
+The report distinguishes the two skip reasons explicitly so users can tell
+"the field is gone" from "the healer wasn't confident." A `field_removed`
+skip is essentially safe — there's nothing on the page that resembles the
+target. An `unresolved` skip is a softer signal: the page has *something*
+that looks plausible but the healer wouldn't commit. Both surface the
+healer's diagnostics in the per-step expander.
 
 ### Rename-guard rationale
 
