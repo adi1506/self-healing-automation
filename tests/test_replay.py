@@ -383,6 +383,69 @@ def test_replay_warns_when_live_page_diverges_from_recorded_url():
     assert outcome.step_results[0].get("page_context_warning") == w
 
 
+def test_replay_does_not_warn_when_spa_redirect_settles_within_window():
+    """SPA initial-redirect false-positive guard: if the actual URL has no
+    fragment but the expected URL does, give the app a short window for
+    the hash route to appear. If it converges, no warning. This is the
+    Flutter web case: page.goto returns on /webapp before the in-app
+    router has redirected to /webapp/#/internal/login."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from core.recording import Recording, Step, ElementFingerprint
+    from core.replay import replay_recording
+
+    fp = ElementFingerprint(
+        id="fp-username",
+        primary_locator={"strategy": "id", "value": "username"},
+        fallback_locators=[],
+        attributes={"tag": "input", "type": "text"},
+        page_context={"url": "https://app.example.com/webapp/#/internal/login"},
+    )
+    rec = Recording(
+        id="r1", name="t", kind="scenario", application_id="a",
+        created_at="",
+        start_url="https://app.example.com/webapp",
+        steps=[Step(index=0, action="fill", value="x", element=fp)],
+    )
+
+    with patch("core.replay.async_playwright") as mock_pw:
+        page = MagicMock()
+        page.goto = AsyncMock()
+        # Initial state: page.goto just returned, hash route not yet set
+        page.url = "https://app.example.com/webapp"
+
+        # The SPA "redirect" — after the first wait_for_timeout, the hash
+        # route appears. Simulates Flutter's in-app router catching up.
+        async def settle_url(ms):
+            page.url = "https://app.example.com/webapp/#/internal/login"
+        page.wait_for_timeout = AsyncMock(side_effect=settle_url)
+        page.evaluate = AsyncMock(return_value=[])
+        loc = MagicMock()
+        loc.count = AsyncMock(return_value=1)
+        loc.first.fill = AsyncMock()
+        page.locator = MagicMock(return_value=loc)
+        page.screenshot = AsyncMock()
+
+        context = MagicMock()
+        context.new_page = AsyncMock(return_value=page)
+        context.add_init_script = AsyncMock()
+        context.close = AsyncMock()
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.close = AsyncMock()
+        p_inst = MagicMock()
+        p_inst.chromium.launch = AsyncMock(return_value=browser)
+        mock_pw.return_value.__aenter__ = AsyncMock(return_value=p_inst)
+        mock_pw.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        outcome = asyncio.run(replay_recording(rec, element_timeout_ms=10))
+
+    assert outcome.page_context_warnings == [], (
+        f"SPA-redirect timing should suppress the warning once URL converges; "
+        f"got: {outcome.page_context_warnings}"
+    )
+
+
 def test_replay_does_not_warn_when_only_query_string_differs():
     """Query strings (tracking params, session ids) are stripped before
     comparison — they must not produce false-positive warnings."""

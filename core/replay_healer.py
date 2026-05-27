@@ -38,7 +38,15 @@ MARGIN_REQ = 0.10        # top must beat runner-up by at least this
 AUTO_PERSIST_THRESHOLD = 0.90   # stricter bar for opt-in auto-write-back
 
 
-# --- Feature weights (sum to 1.0 — see design doc §2.4) ------------------
+# --- Feature weights -----------------------------------------------------
+# Original weights sum to 1.0 (see design doc §2.4). `text_content` and
+# `bbox` are additive: they only contribute to scoring when both stored
+# and candidate carry them, so adding them doesn't dilute weight for
+# well-labeled traditional elements (where the original features already
+# dominate). For low-signal elements like Flutter <flt-semantics> tiles
+# — where autocomplete/name/aria_label are all empty — these two carry
+# the disambiguation. Score normalization in `score_candidate` is by
+# sum of PRESENT feature weights, so overshooting the 1.0 total is fine.
 _WEIGHTS = {
     "autocomplete": 0.25,
     "nearest_label_text": 0.20,
@@ -49,6 +57,8 @@ _WEIGHTS = {
     "aria_label": 0.05,
     "pattern": 0.03,
     "role": 0.02,
+    "text_content": 0.15,
+    "bbox": 0.08,
 }
 
 
@@ -214,6 +224,37 @@ def _exact_or_skip(a: str, b: str) -> tuple[float, bool]:
     return (1.0 if a == b else 0.0), False
 
 
+def _bbox_sim(stored_bbox: dict, candidate_bbox: dict) -> tuple[float, bool]:
+    """Position-on-page similarity. Critical for low-signal elements like
+    Flutter <flt-semantics> tiles where text/aria/name are all empty —
+    layout becomes one of the few stable signals between sessions.
+
+    Score 1.0 when centers coincide (with a 50px jitter tolerance for
+    minor re-renders), falling off linearly to 0.0 at 250px center
+    distance. Skips entirely if either bbox is zero-sized (off-screen
+    or not captured).
+
+    Does not currently penalise size divergence — different-sized
+    elements at the same center are still considered the same position,
+    which suits SPAs where widgets resize on content changes. If size
+    sensitivity becomes needed for a real case, fold it in here rather
+    than adding a separate `size` feature.
+    """
+    if not isinstance(stored_bbox, dict) or not isinstance(candidate_bbox, dict):
+        return 0.0, True
+    sw, sh = stored_bbox.get("width") or 0, stored_bbox.get("height") or 0
+    cw, ch = candidate_bbox.get("width") or 0, candidate_bbox.get("height") or 0
+    if sw <= 0 or sh <= 0 or cw <= 0 or ch <= 0:
+        return 0.0, True
+    sx = (stored_bbox.get("x") or 0) + sw / 2
+    sy = (stored_bbox.get("y") or 0) + sh / 2
+    cx = (candidate_bbox.get("x") or 0) + cw / 2
+    cy = (candidate_bbox.get("y") or 0) + ch / 2
+    dist = ((sx - cx) ** 2 + (sy - cy) ** 2) ** 0.5
+    sim = max(0.0, 1.0 - max(0.0, dist - 50.0) / 200.0)
+    return sim, False
+
+
 def score_candidate(stored: ElementFingerprint, candidate: ElementFingerprint) -> tuple[float, list[str]]:
     """Return (normalized_score, matched_features).
 
@@ -242,10 +283,17 @@ def score_candidate(stored: ElementFingerprint, candidate: ElementFingerprint) -
         feature_scores["pattern"] = sc
 
     # String-similarity features
-    for key in ("nearest_label_text", "name", "id", "placeholder", "aria_label"):
+    for key in ("nearest_label_text", "name", "id", "placeholder", "aria_label", "text_content"):
         sc, empty = _str_sim(s_attrs.get(key, ""), c_attrs.get(key, ""))
         if not empty:
             feature_scores[key] = sc
+
+    # Bbox proximity — important for elements whose text/aria/name are all
+    # empty (Flutter tiles, anonymous semantic wrappers), and harmless for
+    # well-labeled elements since the other features still dominate.
+    sc, empty = _bbox_sim(s_attrs.get("bbox") or {}, c_attrs.get("bbox") or {})
+    if not empty:
+        feature_scores["bbox"] = sc
 
     # Tag + type combined — always present (every element has a tag)
     s_tag = (s_attrs.get("tag") or "").lower()

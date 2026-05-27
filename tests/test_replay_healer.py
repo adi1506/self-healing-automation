@@ -124,6 +124,88 @@ def test_tag_mismatch_penalised():
     assert same_score > score
 
 
+def test_text_content_breaks_tie_for_low_signal_flutter_tiles():
+    """Flutter <flt-semantics> tiles have empty autocomplete/name/aria/label —
+    every signal in the original weighted set returns 0.0 or skips. Without
+    text_content scoring, two tiles like "Create Application" and "My Leads"
+    score identically, and the healer's margin guard refuses to commit
+    (the ambiguous-fingerprint failure the user hit). With text_content
+    in the feature set, the tile with matching text scores meaningfully
+    higher than tiles with different text."""
+    stored = _fp(
+        tag="flt-semantics", type="", id="flt-semantic-node-45",
+        text_content="Create Application",
+    )
+    matching_tile = _fp(
+        tag="flt-semantics", type="", id="flt-semantic-node-29",
+        text_content="Create Application",
+    )
+    other_tile = _fp(
+        tag="flt-semantics", type="", id="flt-semantic-node-32",
+        text_content="My Leads",
+    )
+    match_score, _ = score_candidate(stored, matching_tile)
+    other_score, _ = score_candidate(stored, other_tile)
+    assert match_score > other_score, (
+        f"text_content should disambiguate; got match={match_score:.3f}, "
+        f"other={other_score:.3f}"
+    )
+    # The margin should be wide enough to clear MARGIN_REQ (0.10) — otherwise
+    # the heal would still be rejected as ambiguous on this realistic case.
+    assert (match_score - other_score) >= MARGIN_REQ
+
+
+def test_bbox_proximity_breaks_tie_when_text_also_matches():
+    """Two visually identical tiles (same text, same role, same tag) at
+    different positions: bbox proximity must pick the one whose center
+    is closest to the stored position. Models a real failure on Flutter
+    apps where duplicate tile widgets exist (e.g., a sidebar 'Create
+    Lead' link plus a tile-grid 'Create Lead' button)."""
+    stored = _fp(
+        tag="flt-semantics", type="",
+        text_content="Create Lead",
+        bbox={"x": 528, "y": 255, "width": 243, "height": 182},
+    )
+    near = _fp(
+        tag="flt-semantics", type="",
+        text_content="Create Lead",
+        bbox={"x": 532, "y": 258, "width": 243, "height": 182},  # ~5px off
+    )
+    far = _fp(
+        tag="flt-semantics", type="",
+        text_content="Create Lead",
+        bbox={"x": 100, "y": 800, "width": 100, "height": 30},  # different region
+    )
+    near_score, _ = score_candidate(stored, near)
+    far_score, _ = score_candidate(stored, far)
+    assert near_score > far_score
+
+
+def test_bbox_skipped_when_either_side_zero_sized():
+    """No bbox captured (zero width/height) — skip the feature rather than
+    penalise. Prevents older recordings without bbox capture from being
+    falsely penalised."""
+    stored = _fp(tag="input", type="text", name="phone",
+                 bbox={"x": 0, "y": 0, "width": 0, "height": 0})
+    candidate = _fp(tag="input", type="text", name="phone",
+                    bbox={"x": 100, "y": 200, "width": 300, "height": 40})
+    score, matched = score_candidate(stored, candidate)
+    # Name+tag still drive a strong match — bbox being skipped doesn't tank it.
+    assert score >= SCORE_THRESHOLD
+    assert "bbox" not in matched
+
+
+def test_text_content_skipped_when_either_side_empty():
+    """Mirror of the bbox skip rule: empty-on-one-side text shouldn't
+    penalise — many traditional form fields legitimately have empty
+    text_content (the value lives in `value`, not in the element text)."""
+    stored = _fp(tag="input", type="text", name="phone", text_content="")
+    candidate = _fp(tag="input", type="text", name="phone", text_content="555-1212")
+    score, matched = score_candidate(stored, candidate)
+    assert score >= SCORE_THRESHOLD
+    assert "text_content" not in matched
+
+
 # --- is_action_compatible -------------------------------------------------
 
 def test_fill_compatible_with_text_input():

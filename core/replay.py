@@ -855,13 +855,37 @@ async def replay_recording(
                         expected_norm = _normalize_url_for_compare(expected_raw)
                         actual_norm = _normalize_url_for_compare(actual_raw)
                         if expected_norm and expected_norm != actual_norm:
-                            warning = {
-                                "step_index": step.index,
-                                "expected_url": expected_raw,
-                                "actual_url": actual_raw,
-                            }
-                            outcome.page_context_warnings.append(warning)
-                            result["page_context_warning"] = warning
+                            # SPA initial-redirect false positive: Flutter web
+                            # (and similar) loads `/app` first, then internally
+                            # navigates to `/app/#/route`. page.goto returns on
+                            # the initial DOM, before the hash redirect has
+                            # fired. Give the app up to 1.5s to settle when
+                            # the expected URL has a fragment route but the
+                            # actual URL doesn't yet. Outside that specific
+                            # shape we don't wait — the URLs are genuinely
+                            # different and waiting would just delay the
+                            # warning for real mismatches.
+                            exp_split = urlsplit(expected_raw)
+                            act_split = urlsplit(actual_raw)
+                            spa_redirect_pending = bool(
+                                exp_split.fragment and not act_split.fragment
+                            )
+                            if spa_redirect_pending:
+                                end_at = time.monotonic() + 1.5
+                                while time.monotonic() < end_at:
+                                    await page.wait_for_timeout(100)
+                                    actual_raw = page.url
+                                    actual_norm = _normalize_url_for_compare(actual_raw)
+                                    if actual_norm == expected_norm:
+                                        break
+                            if expected_norm != actual_norm:
+                                warning = {
+                                    "step_index": step.index,
+                                    "expected_url": expected_raw,
+                                    "actual_url": actual_raw,
+                                }
+                                outcome.page_context_warnings.append(warning)
+                                result["page_context_warning"] = warning
                 try:
                     await execute_step(
                         page, step,
