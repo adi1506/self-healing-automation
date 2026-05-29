@@ -134,6 +134,23 @@ def render(
             marker_parts.append(":blue[🔒]")
         cols[9].markdown(" ".join(marker_parts) or "")
 
+        # Per-field AI hint — shown only for data-entry steps, and only when the
+        # value is not locked (a fixed value needs no hint).
+        if _is_data_entry(s) and not getattr(s, "locked_value", False):
+            with st.expander("💬 AI hint for this field", expanded=bool(s.field_context)):
+                new_ctx = st.text_area(
+                    "Tell the AI how to fill this field "
+                    "(used when it keeps getting this field wrong)",
+                    value=s.field_context or "",
+                    key=f"rec_fieldctx_{recording_id}_{i}",
+                    placeholder="e.g. PAN = 5 uppercase letters, 4 digits, 1 letter (AAAAA9999A)",
+                )
+                normalized = new_ctx.strip() or None
+                if normalized != s.field_context:
+                    s.field_context = normalized
+                    on_save(rec)
+                    st.rerun()
+
         # Revert popover — rendered beneath the row when its flag is set
         if st.session_state.get(f"_rev_popup_{recording_id}_{i}", False):
             with st.container(border=True):
