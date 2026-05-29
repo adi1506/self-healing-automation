@@ -108,6 +108,13 @@ class Step:
     # field name/placeholder/label; user can override in the recording editor.
     # A True value on any step forces the replay browser to launch headed.
     needs_manual: bool = False
+    # When True, the AI keeps this step's recorded value verbatim in every
+    # generated test case and never generates a value for it (e.g. username,
+    # password, a fixed account number). User-toggled in the recording editor.
+    locked_value: bool = False
+    # Optional free-text hint sent to the AI for THIS field only — a targeted
+    # fix when the model repeatedly produces wrong values for it.
+    field_context: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -122,6 +129,8 @@ class Step:
             "error_elements": [e.to_dict() for e in self.error_elements],
             "inserted_by": self.inserted_by,
             "needs_manual": self.needs_manual,
+            "locked_value": self.locked_value,
+            "field_context": self.field_context,
         }
 
     @classmethod
@@ -138,6 +147,8 @@ class Step:
             error_elements=[ElementFingerprint.from_dict(e) for e in d.get("error_elements", [])],
             inserted_by=d.get("inserted_by"),
             needs_manual=bool(d.get("needs_manual", False)),
+            locked_value=bool(d.get("locked_value", False)),
+            field_context=d.get("field_context"),
         )
 
 
