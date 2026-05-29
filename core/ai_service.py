@@ -276,35 +276,52 @@ class AIService:
 
     def suggest_test_cases_for_recording(
         self, recording, count: int, focus_areas: list[str],
+        app_context: str = "",
     ) -> list[dict] | None:
         """Return `count` test-case variants for a recording, or None on failure.
 
-        Each returned dict: {name, expected_outcome, overrides: {fingerprint_id:
-        value}, rationale}. The LLM references steps by index; we map index →
-        fingerprint id here so the UI only ever sees the canonical key.
+        Locked steps (step.locked_value) are kept at their recorded value and
+        shown to the model as fixed context — never overridable. Per-field
+        context, app context, and the screen/route are threaded into the prompt.
+        In regression mode, only success-outcome variants are kept.
         """
         from core.ai_prompts import build_test_cases_for_recording_prompt
 
-        overridable = []
+        overridable: list[dict] = []
         index_to_fp: dict[int, str] = {}
+        fixed_fields: list[dict] = []
         for step in recording.steps:
             if step.action not in ("fill", "select") or step.element is None:
+                continue
+            attrs = step.element.attributes or {}
+            if getattr(step, "locked_value", False):
+                label = (attrs.get("aria_label") or attrs.get("nearest_label_text")
+                         or attrs.get("name") or attrs.get("id")
+                         or attrs.get("text_content") or "field")
+                fixed_fields.append({"label": label, "value": step.value})
                 continue
             idx = len(overridable)
             index_to_fp[idx] = step.element.id
             overridable.append({
                 "action": step.action,
                 "value": step.value,
-                "attributes": step.element.attributes,
+                "attributes": attrs,
+                "field_context": getattr(step, "field_context", None),
             })
         if not overridable:
             return []
 
-        prompt = build_test_cases_for_recording_prompt(overridable, count, focus_areas)
+        prompt = build_test_cases_for_recording_prompt(
+            overridable, count, focus_areas,
+            app_context=app_context,
+            screen_context=self._recording_screen_context(recording),
+            fixed_fields=fixed_fields,
+        )
         raw = self.generate_json(prompt, timeout=180.0)
         if not isinstance(raw, dict) or not isinstance(raw.get("cases"), list):
             return None
 
+        regression = "Regression Testing" in (focus_areas or [])
         resolved: list[dict] = []
         for case in raw["cases"]:
             if not isinstance(case, dict):
@@ -313,6 +330,8 @@ class AIService:
             outcome = case.get("expected_outcome")
             if outcome not in ("success", "failure"):
                 outcome = "failure"
+            if regression and outcome != "success":
+                continue  # regression set is valid-only
             overrides: dict[str, str] = {}
             for ov in case.get("overrides") or []:
                 if not isinstance(ov, dict):
@@ -330,6 +349,21 @@ class AIService:
                 "rationale": (case.get("rationale") or "").strip(),
             })
         return resolved
+
+    @staticmethod
+    def _recording_screen_context(recording) -> str:
+        """Best-effort screen label + route for the prompt header."""
+        route = getattr(recording, "start_url", "") or ""
+        section = ""
+        for step in recording.steps:
+            if step.element is None:
+                continue
+            section = ((step.element.attributes or {}).get("nearest_landmark_text") or "").strip()
+            if section:
+                break
+        if section and route:
+            return f"{section} ({route})"
+        return section or route
 
     def generate_field_value(
         self, field: dict, page_context: dict,
