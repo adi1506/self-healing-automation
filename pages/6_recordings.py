@@ -177,6 +177,22 @@ def _render_app_detail_mode(app_id: str) -> None:
         f"{'login ✓' if app.login_recording_id else 'login ✗'} · state {health}"
     )
 
+    with st.expander("🧠 AI domain context", expanded=bool(app.domain_context)):
+        new_ctx = st.text_area(
+            "Describe this app for the AI (domain, data formats, personas). "
+            "Used when generating test data — especially for Flutter apps.",
+            value=app.domain_context or "",
+            key=f"app_domain_ctx_{app.id}",
+            placeholder=("e.g. mCAS — Indian retail-banking customer acquisition / "
+                         "KYC. Use Indian formats: PAN (AAAAA9999A), Aadhaar (12 "
+                         "digits), IFSC, ₹ income, +91 mobiles, Indian cities/states."),
+        )
+        if st.button("Save context", key=f"app_domain_save_{app.id}"):
+            app.domain_context = new_ctx.strip() or None
+            save_application(APP_DIR, app)
+            st.success("Domain context saved.")
+            st.rerun()
+
     confirm_key = f"_confirm_del_app_detail_{app.id}"
     if st.button("🗑 Delete app", key=f"del_app_detail_{app.id}"):
         st.session_state[confirm_key] = True
