@@ -24,6 +24,14 @@ DEFAULT_MODEL = "phi4:14b"
 DEFAULT_SETTINGS_PATH = "data/settings.yaml"
 AVAILABILITY_TTL_SEC = 30.0
 
+# Per-model maximum context window (tokens). Set as num_ctx so Ollama does not
+# cap the window low by default and silently truncate long prompts.
+MODEL_MAX_CTX = {
+    "phi4:14b": 16384,
+}
+DEFAULT_MAX_CTX = 8192       # conservative fallback for unlisted models
+MAX_CTX_CEILING = 16384      # deployment guard against over-allocation
+
 
 class AIService:
     def __init__(self, settings_path: str = DEFAULT_SETTINGS_PATH):
@@ -100,6 +108,11 @@ class AIService:
         self._available_at = time.monotonic()
         return self._available
 
+    def _num_ctx(self) -> int:
+        """Context window to request from Ollama — the configured model's max,
+        capped by a deployment ceiling."""
+        return min(MODEL_MAX_CTX.get(self.model, DEFAULT_MAX_CTX), MAX_CTX_CEILING)
+
     @staticmethod
     def _extract_model_names(listing) -> list[str]:
         """Pull model names from either a dict or a Pydantic ListResponse."""
@@ -145,7 +158,8 @@ class AIService:
         def _call():
             return self.client.generate(
                 model=self.model, prompt=prompt,
-                format="json", options={"temperature": 0.0},
+                format="json",
+                options={"temperature": 0.0, "num_ctx": self._num_ctx()},
             )
 
         future = self._executor.submit(_call)
