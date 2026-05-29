@@ -7,6 +7,11 @@ import streamlit as st
 from core.recording import Recording, Step
 
 
+def _is_data_entry(step) -> bool:
+    """True for steps that carry a value worth locking / hinting."""
+    return step.action in ("fill", "select", "press", "check", "uncheck") and step.element is not None
+
+
 def render(
     scenario,
     recording_id: str,
@@ -49,7 +54,7 @@ def render(
 
     # Render each step as a row
     for i, s in enumerate(rec.steps):
-        cols = st.columns([0.5, 1.5, 3, 3, 0.7, 0.5, 0.5, 0.5, 0.6])
+        cols = st.columns([0.5, 1.5, 3, 3, 0.7, 0.7, 0.5, 0.5, 0.5, 0.6])
         if scroll_to_step_index is not None and i == scroll_to_step_index:
             st.markdown(
                 f":blue-background[**👉 Add a step here** — the failed "
@@ -76,8 +81,25 @@ def render(
             s.needs_manual = new_needs_manual
             on_save(rec)
             st.rerun()
+        # Value lock — keep the recorded value; AI won't vary this field.
+        if _is_data_entry(s):
+            new_locked = cols[5].checkbox(
+                "🔒",
+                value=getattr(s, "locked_value", False),
+                label_visibility="collapsed",
+                key=f"rec_lock_{recording_id}_{i}",
+                help=("Lock this value — the AI keeps your recorded value here "
+                      "and won't generate variations for this field (e.g. "
+                      "username, password, a fixed account number)."),
+            )
+            if new_locked != getattr(s, "locked_value", False):
+                s.locked_value = new_locked
+                on_save(rec)
+                st.rerun()
+        else:
+            cols[5].write("")
         # Delete
-        if cols[5].button("🗑", key=f"rec_del_{recording_id}_{i}",
+        if cols[6].button("🗑", key=f"rec_del_{recording_id}_{i}",
                           help="Delete this step"):
             del rec.steps[i]
             for j, ss in enumerate(rec.steps):
@@ -85,7 +107,7 @@ def render(
             on_save(rec)
             st.rerun()
         # Insert above
-        if cols[6].button("+", key=f"rec_ins_{recording_id}_{i}",
+        if cols[7].button("+", key=f"rec_ins_{recording_id}_{i}",
                           help="Insert empty fill step above"):
             new_step = Step(index=i, action="fill", value="",
                             element=None, inserted_by="user_edit")
@@ -96,19 +118,21 @@ def render(
             st.rerun()
         # Revert (only when there's history)
         if s.element and s.element.fingerprint_history:
-            if cols[7].button("↶", key=f"rec_rev_{recording_id}_{i}",
+            if cols[8].button("↶", key=f"rec_rev_{recording_id}_{i}",
                               help="Revert from heal history"):
                 st.session_state[f"_rev_popup_{recording_id}_{i}"] = True
                 st.rerun()
         else:
-            cols[7].write("")
-        # Marker (now at index 8)
+            cols[8].write("")
+        # Marker (now at index 9)
         marker_parts = []
         if s.inserted_by:
             marker_parts.append(f":gray[{s.inserted_by}]")
         if s.element and s.element.fingerprint_history:
             marker_parts.append(f":gray[↶{len(s.element.fingerprint_history)}]")
-        cols[8].markdown(" ".join(marker_parts) or "")
+        if getattr(s, "locked_value", False):
+            marker_parts.append(":blue[🔒]")
+        cols[9].markdown(" ".join(marker_parts) or "")
 
         # Revert popover — rendered beneath the row when its flag is set
         if st.session_state.get(f"_rev_popup_{recording_id}_{i}", False):
