@@ -10,7 +10,7 @@ from core.recipes import RecipeExecutor
 from core.scanner import _run_async
 from core.setter import Setter
 from core.browser_launch import launch_browser_and_page
-from core.runner_utils import classify_case_outcome, is_blank_dataset_row
+from core.runner_utils import classify_case_outcome, is_blank_dataset_row, is_row_selected
 from core.excel_manager import ExcelManager
 from ui.scenarios.steps_tab import render as render_steps
 from ui.scenarios.dataset_tab import render as render_dataset
@@ -150,7 +150,15 @@ def _run_dataset(sc, elements: list[dict]) -> dict:
     # Skip rows that carry no field data (untouched "+ Add empty row", a
     # stray placeholder row from the data_editor, etc.) — running them would
     # vacuously PASS and inflate the run count above what the user sees.
-    runnable_rows = [r for r in sc.dataset if not is_blank_dataset_row(r)]
+    non_blank_rows = [r for r in sc.dataset if not is_blank_dataset_row(r)]
+    # Honor the Dataset tab's per-row Run checkbox. Rows with no __run flag
+    # default to selected, so pre-feature datasets still run in full.
+    runnable_rows = [r for r in non_blank_rows if is_row_selected(r)]
+    if not runnable_rows:
+        return {"mode": "empty", "message": (
+            "No dataset rows are selected to run. Tick the Run checkbox on at "
+            "least one row in the Dataset tab (or use 'Select all')."
+        )}
 
     # run_id is the umbrella id for this whole scenario execution; the Setter
     # writes one screenshot per row, named "<run_id>_row<idx>.png", so the
@@ -173,6 +181,8 @@ def _run_dataset(sc, elements: list[dict]) -> dict:
         # signal.
         test_data = {}
         for k, v in row.items():
+            if k.startswith("__"):
+                continue  # metadata (e.g. __run, __ai_context) is not a field
             if v is None:
                 continue
             sv = str(v)
@@ -340,6 +350,8 @@ async def _drive_one_page(page, page_entry, elements, setter, run_id, page_idx, 
         row.pop("__test_name", None)
         test_data = {}
         for k, v in row.items():
+            if k.startswith("__"):
+                continue  # metadata (e.g. __run, __ai_context) is not a field
             if v is None:
                 continue
             sv = str(v)
@@ -1863,16 +1875,67 @@ def _render_ai_generator(sc, recording_id: str) -> None:
         )
         focus = c2.multiselect(
             "Focus areas",
-            ["Negative", "Boundary", "Invalid format", "Happy path variants"],
+            ["Regression Testing", "Negative", "Boundary", "Invalid format", "Happy path variants"],
             default=["Negative", "Boundary"],
             key=f"gen_focus_{sc.id}",
         )
+
+        from core.applications import load_application
+        from core.credential_fields import looks_like_credential
+
+        recording = Recording.from_dict(rec_dict)
+
+        # Domain/context box — pre-filled from the application's saved context.
+        try:
+            app = load_application("data/applications", sc.application_id)
+            default_ctx = app.domain_context or ""
+        except Exception:
+            default_ctx = ""
+        app_ctx = st.text_area(
+            "Context for the AI (domain, formats, personas — pre-filled from the app)",
+            value=st.session_state.get(f"gen_ctx_{sc.id}", default_ctx),
+            key=f"gen_ctx_{sc.id}",
+            help="Edits here apply only to this generation run; the app's saved "
+                 "context is unchanged.",
+        )
+
+        # Non-silent credential helper — only acts when clicked.
+        if "Regression Testing" in focus:
+            if st.button("🔒 Lock likely credentials", key=f"gen_lockcreds_{sc.id}"):
+                locked = 0
+                for stp in recording.steps:
+                    if (stp.action in ("fill", "select") and stp.element
+                            and not getattr(stp, "locked_value", False)
+                            and looks_like_credential(stp.element.attributes or {})):
+                        stp.locked_value = True
+                        locked += 1
+                updated = recording.to_dict()
+                for k, r in enumerate(sc.recordings):
+                    if r.get("id") == recording_id:
+                        sc.recordings[k] = updated
+                save_scenario(DATA_SCENARIOS, sc)
+                st.success(f"Locked {locked} likely-credential field(s).")
+                st.rerun()
+
+        locked_labels = [
+            ((stp.element.attributes or {}).get("aria_label")
+             or (stp.element.attributes or {}).get("nearest_label_text")
+             or (stp.element.attributes or {}).get("name") or "field")
+            for stp in recording.steps
+            if getattr(stp, "locked_value", False) and stp.element
+        ]
+        if locked_labels:
+            st.caption("Locked (kept as recorded): " + ", ".join(locked_labels))
+        if "Regression Testing" in focus and any(
+                f in focus for f in ("Negative", "Boundary", "Invalid format")):
+            st.caption("ⓘ Regression Testing produces valid-only data; the other "
+                       "selected focus areas are ignored for this run.")
+
         col_go, col_cancel = st.columns([1, 1])
         if col_go.button("Generate", type="primary", key=f"gen_go_{sc.id}"):
-            recording = Recording.from_dict(rec_dict)
             with st.spinner(f"Asking {svc.model} for {count} variants…"):
                 result = svc.suggest_test_cases_for_recording(
-                    recording, int(count), focus,
+                    recording, int(count), focus, app_context=app_ctx,
                 )
             if result is None:
                 st.error("AI returned an unparseable response.")
