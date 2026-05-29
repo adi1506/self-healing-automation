@@ -5,7 +5,7 @@ change to invalidate stale entries.
 """
 from __future__ import annotations
 
-PROMPT_VERSION = "2"
+PROMPT_VERSION = "3"
 
 
 def build_match_prompt(old_element: dict, candidates: list[dict]) -> str:
@@ -89,55 +89,105 @@ def _field_line(field: dict) -> str:
 
 
 def build_test_cases_for_recording_prompt(
-    overridable_steps: list[dict], count: int, focus_areas: list[str],
+    overridable_steps: list[dict],
+    count: int,
+    focus_areas: list[str],
+    *,
+    app_context: str = "",
+    screen_context: str = "",
+    fixed_fields: list[dict] | None = None,
 ) -> str:
     """Prompt the model to emit `count` test-case variants for a recording.
 
-    Each entry in `overridable_steps` describes one fill/select step from the
-    recording — the model references steps by INDEX (not fingerprint id) so it
-    cannot fabricate identifiers. The service layer maps index→fingerprint
-    after parsing.
+    `overridable_steps`: each {action, value, attributes, field_context}. The
+      model references these by INDEX (never by id) and may override their
+      values; the service maps index -> fingerprint after parsing.
+    `fixed_fields`: locked/credential fields, shown read-only as {label, value}
+      so the model keeps other fields consistent with them but cannot change
+      them.
+    `app_context` / `screen_context`: domain + screen/route context — essential
+      for Flutter apps where DOM constraints are absent.
+    Regression mode is active when "Regression Testing" is in `focus_areas`.
     """
+    fixed_fields = fixed_fields or []
+    regression = "Regression Testing" in (focus_areas or [])
+
+    def _label(attrs: dict) -> str:
+        return (attrs.get("aria_label") or attrs.get("nearest_label_text")
+                or attrs.get("placeholder") or attrs.get("name")
+                or attrs.get("id") or attrs.get("text_content") or "field")
+
+    def _constraints(attrs: dict) -> str:
+        h5 = attrs.get("html5_constraints") or {}
+        parts = []
+        if h5.get("required") or attrs.get("is_required"): parts.append("required")
+        if h5.get("pattern"): parts.append(f"pattern={h5['pattern']}")
+        if h5.get("maxlength"): parts.append(f"maxlen={h5['maxlength']}")
+        if h5.get("minlength"): parts.append(f"minlen={h5['minlength']}")
+        if h5.get("min") not in ("", None): parts.append(f"min={h5['min']}")
+        if h5.get("max") not in ("", None): parts.append(f"max={h5['max']}")
+        if attrs.get("autocomplete"): parts.append(f"autocomplete={attrs['autocomplete']}")
+        return ", ".join(parts)
+
     lines = []
     for i, step in enumerate(overridable_steps):
         attrs = step.get("attributes") or {}
-        h5 = attrs.get("html5_constraints") or {}
-        label = (
-            attrs.get("aria_label")
-            or attrs.get("placeholder")
-            or attrs.get("name")
-            or attrs.get("id")
-            or f"field-{i}"
-        )
-        cparts = []
-        if h5.get("required"): cparts.append("required")
-        if h5.get("pattern"): cparts.append(f"pattern={h5['pattern']}")
-        if h5.get("maxlength"): cparts.append(f"maxlength={h5['maxlength']}")
-        if h5.get("minlength"): cparts.append(f"minlength={h5['minlength']}")
-        if h5.get("min") not in ("", None): cparts.append(f"min={h5['min']}")
-        if h5.get("max") not in ("", None): cparts.append(f"max={h5['max']}")
-        if attrs.get("autocomplete"): cparts.append(f"autocomplete={attrs['autocomplete']}")
-        constraints = ", ".join(cparts) or "none"
-        lines.append(
-            f"  Index {i}: action={step.get('action')}, label='{label}', "
-            f"type='{attrs.get('type', '')}', "
-            f"recorded_value={step.get('value')!r}, constraints: {constraints}"
-        )
-    listing = "\n".join(lines)
-    focus_text = ", ".join(focus_areas) if focus_areas else "any kind"
-    return f"""You are a test automation assistant generating variant test cases for a recorded UI flow.
+        cons = _constraints(attrs) or "none"
+        line = (f"  [{i}] {_label(attrs)} (type={attrs.get('type', '') or 'n/a'}; "
+                f"recorded={step.get('value')!r}; constraints: {cons})")
+        ctx = (step.get("field_context") or "").strip()
+        if ctx:
+            line += f"\n        field-context: {ctx}"
+        lines.append(line)
+    listing = "\n".join(lines) or "  (no overridable fields)"
 
-These are the data-entry steps in the recording (referred to by INDEX):
+    fixed_block = ""
+    if fixed_fields:
+        fixed_lines = "\n".join(
+            f"  - {f.get('label', 'field')} = {f.get('value')!r} (FIXED — never change)"
+            for f in fixed_fields
+        )
+        fixed_block = (
+            "\nThese fields are FIXED at their recorded values. Do NOT include them "
+            "in overrides; keep your other values consistent with them:\n"
+            f"{fixed_lines}\n"
+        )
+
+    header = ""
+    if app_context.strip():
+        header += f"Application context: {app_context.strip()}\n"
+    if screen_context.strip():
+        header += f"Screen: {screen_context.strip()}\n"
+
+    if regression:
+        focus_instruction = (
+            "Focus: REGRESSION. Produce realistic, production-like VALID data. "
+            "Every variant MUST have expected_outcome='success'. Vary EVERY "
+            "overridable field below with a distinct, plausible value (do not "
+            "leave fields at their recorded value). Make each variant a different "
+            "realistic persona consistent with the application context."
+        )
+    else:
+        focus_text = ", ".join(focus_areas) if focus_areas else "any kind"
+        focus_instruction = (
+            f"Generate variants focused on: {focus_text}. expected_outcome is "
+            "'failure' when the variant should be rejected (validation error, "
+            "denied auth, server reject) and 'success' otherwise. Honor "
+            "constraints when generating boundary/invalid values (exceed maxlen "
+            "on purpose, violate pattern on purpose)."
+        )
+
+    return f"""You are a test automation assistant generating variant test cases for a recorded UI flow.
+{header}{fixed_block}
+Overridable data-entry fields (reference them by INDEX in brackets):
 {listing}
 
-Generate exactly {count} test case variants focused on: {focus_text}.
-
+Generate exactly {count} test case variants.
+{focus_instruction}
 Rules:
-- Each test case may override ONLY the steps listed above, referenced by INDEX.
-- If a step is not overridden, the recording's recorded_value is reused — do NOT include it.
-- "expected_outcome" is "failure" when the variant should be rejected (validation error, denied auth, server reject) and "success" otherwise.
-- Give each case a short human name (e.g. "Empty username", "SQL injection in password").
-- Honor constraints when generating boundary/invalid values (e.g. exceed maxlength on purpose, violate pattern on purpose).
+- Override ONLY the indexed fields above. A field you don't override keeps its recorded value — don't include it.
+- Give each case a short human name (e.g. "Senior NRI applicant", "Empty username").
+- If a field has a field-context note, follow it exactly.
 
 Respond ONLY with valid JSON in this exact format:
 {{"cases": [
