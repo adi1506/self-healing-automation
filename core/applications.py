@@ -14,6 +14,10 @@ class Application:
     storage_state_path: Optional[str] = None
     storage_state_captured_at: Optional[str] = None
     storage_state_expires_at: Optional[str] = None
+    # Free-text domain/business description the user fills once per app, fed to
+    # the AI when generating test data — especially valuable for Flutter apps
+    # (e.g. mCAS) where the DOM exposes almost no field metadata.
+    domain_context: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
