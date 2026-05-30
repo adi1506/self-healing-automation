@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Flutter v2 relabel fixture</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  flt-semantics-host { display: block; position: relative; }
+  flt-semantics {
+    display: block; position: absolute; box-sizing: border-box;
+    overflow: visible;
+  }
+  flt-semantics[role="radio"] { border: 1px solid #888; border-radius: 50%; }
+  flt-semantics[aria-checked="true"] { background: #1976d2; }
+  flt-semantics input { width: 100%; height: 100%; box-sizing: border-box; }
+  flt-semantics span { font: 14px system-ui; }
+</style>
+</head>
+<body>
+<flt-semantics-host>
+  <flt-semantics id="flt-semantic-node-2" style="left:0;top:0;width:1280px;height:720px;">
+    <!-- Radios moved down 40px; ids renumbered; labels rephrased. -->
+    <flt-semantics id="flt-semantic-node-44" role="radio" aria-checked="false"
+        data-truth="radio-individual"
+        style="left:240px;top:330px;width:32px;height:32px;"></flt-semantics>
+    <flt-semantics id="flt-semantic-node-45"
+        style="left:276px;top:332px;width:130px;height:25px;"><span>Single Applicant</span></flt-semantics>
+    <flt-semantics id="flt-semantic-node-46" role="radio" aria-checked="false"
+        data-truth="radio-non-individual"
+        style="left:420px;top:330px;width:32px;height:32px;"></flt-semantics>
+    <flt-semantics id="flt-semantic-node-47"
+        style="left:456px;top:332px;width:130px;height:25px;"><span>Joint Applicant</span></flt-semantics>
+    <flt-semantics id="flt-semantic-node-50"
+        style="left:760px;top:326px;width:417px;height:54px;">
+      <input type="text" aria-label="Phone Number *" data-truth="mobile" />
+    </flt-semantics>
+    <flt-semantics id="flt-semantic-node-60" role="button"
+        data-truth="chevron"
+        style="left:1140px;top:340px;width:24px;height:24px;"></flt-semantics>
+  </flt-semantics>
+</flt-semantics-host>
+<script>
+  var radios = document.querySelectorAll('flt-semantics[role="radio"]');
+  radios.forEach(function (r) {
+    r.addEventListener('click', function () {
+      radios.forEach(function (x) { x.setAttribute('aria-checked', 'false'); });
+      r.setAttribute('aria-checked', 'true');
+    });
+  });
+</script>
+</body>
+</html>
