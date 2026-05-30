@@ -82,7 +82,7 @@ async def _drive_flutter_v1(page) -> None:
     """
     await page.wait_for_selector("flt-semantics-host", timeout=10000)
     await page.click('flt-semantics[data-truth="radio-individual"]')
-    await page.fill('flt-semantics[data-truth="mobile"] input', "5551234567")
+    await page.fill('input[data-truth="mobile"]', "5551234567")
     await page.click('flt-semantics[data-truth="chevron"]')
     await page.wait_for_timeout(300)
 
