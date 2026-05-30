@@ -31,6 +31,7 @@ _FIXTURES = _ROOT / "tests" / "fixtures"
 _VARIANT_FILE = {
     "v1": _FIXTURES / "flutter_v1.html",
     "v2": _FIXTURES / "flutter_v2_relabel.html",
+    "v3": _FIXTURES / "flutter_v3_swap.html",
 }
 
 
