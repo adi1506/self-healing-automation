@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Flutter v3 swap fixture</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  flt-semantics-host { display: block; position: relative; width: 1280px; height: 720px; }
+  flt-semantics {
+    display: block; position: absolute; box-sizing: border-box;
+    overflow: visible;
+  }
+  flt-semantics[role="radio"] { border: 1px solid #888; border-radius: 50%; }
+  flt-semantics[aria-checked="true"] { background: #1976d2; }
+  flt-semantics input { width: 100%; height: 100%; box-sizing: border-box; }
+  flt-semantics span { font: 14px system-ui; }
+</style>
+</head>
+<body>
+<!-- v3: the two radios' x positions are SWAPPED vs v1 (each label travels with
+     its control); mobile + chevron unchanged. radio-individual now sits where
+     radio-non-individual was and vice versa. The recorded v1 click targeted
+     radio-individual at x=240; here the node at x=240 is the FOIL. Position
+     and identity disagree — the case that forces radio-vs-radio disambiguation. -->
+<flt-semantics-host>
+  <flt-semantics id="flt-semantic-node-3" style="left:0;top:0;width:1280px;height:720px;">
+    <!-- Radio group: Individual — control moved 240 -> 380, label 276 -> 416 -->
+    <flt-semantics id="flt-semantic-node-50" role="radio" aria-checked="false"
+        data-truth="radio-individual"
+        style="left:380px;top:290px;width:32px;height:32px;"></flt-semantics>
+    <flt-semantics id="flt-semantic-node-51"
+        style="left:416px;top:292px;width:90px;height:25px;"><span>Individual</span></flt-semantics>
+    <!-- Radio group: Non-Individual — control moved 380 -> 240, label 416 -> 276 -->
+    <flt-semantics id="flt-semantic-node-52" role="radio" aria-checked="false"
+        data-truth="radio-non-individual"
+        style="left:240px;top:290px;width:32px;height:32px;"></flt-semantics>
+    <flt-semantics id="flt-semantic-node-53"
+        style="left:276px;top:292px;width:130px;height:25px;"><span>Non-Individual</span></flt-semantics>
+    <!-- Aria-labeled text input — unchanged from v1. -->
+    <flt-semantics id="flt-semantic-node-60"
+        style="left:760px;top:286px;width:417px;height:54px;">
+      <input type="text" aria-label="Mobile No *" data-truth="mobile" />
+    </flt-semantics>
+    <!-- Textless icon button — unchanged from v1. -->
+    <flt-semantics id="flt-semantic-node-70" role="button"
+        data-truth="chevron"
+        style="left:1140px;top:300px;width:24px;height:24px;"></flt-semantics>
+  </flt-semantics>
+</flt-semantics-host>
+<script>
+  var radios = document.querySelectorAll('flt-semantics[role="radio"]');
+  radios.forEach(function (r) {
+    r.addEventListener('click', function () {
+      radios.forEach(function (x) { x.setAttribute('aria-checked', 'false'); });
+      r.setAttribute('aria-checked', 'true');
+    });
+  });
+</script>
+</body>
+</html>
