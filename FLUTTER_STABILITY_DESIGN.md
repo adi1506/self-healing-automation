@@ -28,17 +28,17 @@ Explicitly **not** in scope this iteration: environment drift (viewport/zoom/DPR
 ### 1.3 Root causes (verified in code)
 
 **Every Flutter field heals — structurally (the speed problem).**
-`find_element_by_fingerprint` builds `[primary, *fallbacks]`, then `_is_flutter_ordinal_locator` strips every locator that references the render-order ordinal ([core/replay.py:273-284](../../../core/replay.py#L273-L284), [core/replay.py:102-117](../../../core/replay.py#L102-L117)). For a Flutter control:
+`find_element_by_fingerprint` builds `[primary, *fallbacks]`, then `_is_flutter_ordinal_locator` strips every locator that references the render-order ordinal ([core/replay.py:273-284](core/replay.py#L273-L284), [core/replay.py:102-117](core/replay.py#L102-L117)). For a Flutter control:
 
 - `id` = `flt-semantic-node-N` → stripped
 - `css` = `flt-semantics#flt-semantic-node-N` → stripped
 - `xpath` = `//*[@id='flt-semantic-node-N']` or `…/flt-semantics[3]/…` → stripped
 - `name` = empty
 
-`candidates` becomes empty, the polling `deadline` collapses to *now*, and control falls straight into `attempt_heal` — a full `scanAll()` (fingerprint every interactive element + every `flt-semantics`, serialize to Python, score each), plus a settle wait after navigation. This happens on **every Flutter field, every run.** The per-run heal cache ([core/replay.py:289-298](../../../core/replay.py#L289-L298)) only helps when the same `fp.id` recurs; each distinct field still pays full heal cost once.
+`candidates` becomes empty, the polling `deadline` collapses to *now*, and control falls straight into `attempt_heal` — a full `scanAll()` (fingerprint every interactive element + every `flt-semantics`, serialize to Python, score each), plus a settle wait after navigation. This happens on **every Flutter field, every run.** The per-run heal cache ([core/replay.py:289-298](core/replay.py#L289-L298)) only helps when the same `fp.id` recurs; each distinct field still pays full heal cost once.
 
 **Textless controls have no text identity (the flaky/relabel problem).**
-Flutter splits a control and its label into adjacent `flt-semantics` siblings. A `role=radio` node carries empty `text_content`, and `nearestLabelText` ([core/capture/inject.js:110-121](../../../core/capture/inject.js#L110-L121)) only walks `<label for>` / ancestor `<label>` — neither exists in Flutter. So the radio's fingerprint has `text_content=""`, `nearest_label_text=""`, `aria_label=""`, and the scorer collapses onto `tag_type + role + bbox`. Adjacent radios differ only by ~80px of bbox (flaky picks), and bbox is the only signal that survives a move (relabel/move failure).
+Flutter splits a control and its label into adjacent `flt-semantics` siblings. A `role=radio` node carries empty `text_content`, and `nearestLabelText` ([core/capture/inject.js:110-121](core/capture/inject.js#L110-L121)) only walks `<label for>` / ancestor `<label>` — neither exists in Flutter. So the radio's fingerprint has `text_content=""`, `nearest_label_text=""`, `aria_label=""`, and the scorer collapses onto `tag_type + role + bbox`. Adjacent radios differ only by ~80px of bbox (flaky picks), and bbox is the only signal that survives a move (relabel/move failure).
 
 ---
 
@@ -57,7 +57,7 @@ Non-goal (explicitly dropped at user request): vision / image-based fallback for
 
 ## 3. Step 0 — Flutter regression battery (mandatory, first)
 
-The existing `T1–T18` suite ([tests/dogfood/run_tests.py](../../../tests/dogfood/run_tests.py)) runs entirely against static Netlify HTML fixtures. It covers the **normal-site no-regression axis** well, but has **zero Flutter coverage** and **never measures heal count** — the exact metric the speed work must move.
+The existing `T1–T18` suite ([tests/dogfood/run_tests.py](tests/dogfood/run_tests.py)) runs entirely against static Netlify HTML fixtures. It covers the **normal-site no-regression axis** well, but has **zero Flutter coverage** and **never measures heal count** — the exact metric the speed work must move.
 
 Build a Flutter battery before touching production code, or the speed claim is unmeasurable and correctness regressions go unseen.
 
@@ -80,7 +80,7 @@ A static HTML fixture that mimics Flutter's `flt-semantics` overlay structure �
 
 ## 4. Goal A — Durable non-ordinal primary locator (speed)
 
-At record time, derive a primary locator that does **not** reference the ordinal, chosen by what the element actually carries. The resolution machinery already exists in the post-heal ladder (`get_by_role(name=)`, `get_by_text`, `[aria-label=…]`, `_find_flutter_by_visible_text` at [core/replay.py:762-835](../../../core/replay.py#L762-L835)); this promotes those concepts to **first-class, record-time locator strategies** so they run on the fast path instead of only after a heal miss.
+At record time, derive a primary locator that does **not** reference the ordinal, chosen by what the element actually carries. The resolution machinery already exists in the post-heal ladder (`get_by_role(name=)`, `get_by_text`, `[aria-label=…]`, `_find_flutter_by_visible_text` at [core/replay.py:762-835](core/replay.py#L762-L835)); this promotes those concepts to **first-class, record-time locator strategies** so they run on the fast path instead of only after a heal miss.
 
 ### 4.1 Locator tiers (record-time selection, in order)
 
@@ -96,7 +96,7 @@ A tier-1/2/3 locator is stored as primary **only if it resolves to exactly one e
 
 ### 4.3 New strategies in `_locator_for`
 
-`_locator_for` ([core/replay.py:179-192](../../../core/replay.py#L179-L192)) gains strategies that map to native Playwright resolution:
+`_locator_for` ([core/replay.py:179-192](core/replay.py#L179-L192)) gains strategies that map to native Playwright resolution:
 
 - `flutter-aria` → `page.locator('flt-semantics[aria-label="…"]')`
 - `flutter-text` → `page.get_by_text(value, exact=True)` (or `flt-semantics`-scoped text scan)
@@ -112,7 +112,7 @@ By construction these locators carry no `flt-semantic-node-N`, so they survive t
 
 ## 5. Goal B — Sibling-text association into the scorer (accuracy)
 
-The same anchor/sibling-text association that builds the tier-3 locator also fills `nearest_label_text` in the fingerprint at **both** record time and heal-scan time (symmetrically). Effect: the scorer's second-highest feature (weight 0.20, [core/replay_healer.py:66-78](../../../core/replay_healer.py#L66-L78)) becomes present for textless controls, normalization shifts weight off bbox, and a genuinely moved/renamed radio heals on its label instead of its position.
+The same anchor/sibling-text association that builds the tier-3 locator also fills `nearest_label_text` in the fingerprint at **both** record time and heal-scan time (symmetrically). Effect: the scorer's second-highest feature (weight 0.20, [core/replay_healer.py:66-78](core/replay_healer.py#L66-L78)) becomes present for textless controls, normalization shifts weight off bbox, and a genuinely moved/renamed radio heals on its label instead of its position.
 
 ### 5.1 Association rule (shared with §4.1 tier 3)
 
@@ -126,7 +126,7 @@ This is implemented once in `inject.js` (the capture side), gated behind `flt-se
 
 The mechanisms that keep this Flutter-only by construction — preserve them:
 
-- **Gating.** All new association/locator logic is gated behind `document.querySelector("flt-semantics-host")`, matching the existing Flutter paths ([core/capture/inject.js:286](../../../core/capture/inject.js#L286), [core/capture/inject.js:609](../../../core/capture/inject.js#L609)). Non-Flutter pages never enter it.
+- **Gating.** All new association/locator logic is gated behind `document.querySelector("flt-semantics-host")`, matching the existing Flutter paths ([core/capture/inject.js:286](core/capture/inject.js#L286), [core/capture/inject.js:609](core/capture/inject.js#L609)). Non-Flutter pages never enter it.
 - **Additive-on-present-features.** Scorer changes only populate a feature that was empty before; they never lower a global threshold or reweight existing features. A well-labeled `<input name=…>` still wins on its high-weight features.
 - **Invariant:** any new Flutter heuristic must stay gated behind `flt-semantics-host` **or** be additive-on-present-features — never lower a global threshold to rescue a Flutter case.
 
